@@ -1,4 +1,4 @@
-# projects/b8008_net/firmware/Makefile
+# remote_8008 firmware/Makefile
 #
 # Builds firmware.bin: a from-scratch replacement for the LiteX BIOS in
 # integrated ROM (see linker.ld). Reuses the LiteX-generated build glue
@@ -15,12 +15,12 @@ BUILD_PATH ?= $(CURDIR)/../build/versa
 # Fresh-checkout guard: on a clean clone the LiteX software tree doesn't
 # exist yet (it's a product of a versa_soc.py build), and a raw `include` of
 # a missing variables.mak dies with an opaque "No such file or directory".
-# Fail with directions instead. `make firmware` from projects/b8008_net runs
+# Fail with directions instead. `make firmware` from the repo root runs
 # the bootstrap automatically (its prerequisite is this very file); the
 # explicit `make bootstrap-headers` target does only the bootstrap.
 VARIABLES_MAK := $(BUILD_PATH)/software/include/generated/variables.mak
 ifeq ($(wildcard $(VARIABLES_MAK)),)
-$(error missing $(VARIABLES_MAK) -- the LiteX SoC software tree has not been generated yet; run `make firmware` (or `make bootstrap-headers`) from projects/b8008_net to bootstrap it)
+$(error missing $(VARIABLES_MAK) -- the LiteX SoC software tree has not been generated yet; run `make firmware` (or `make bootstrap-headers`) from the repo root to bootstrap it)
 endif
 
 include $(VARIABLES_MAK)

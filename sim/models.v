@@ -1,7 +1,7 @@
 // models.v - Verilog memory models for the b8008_net_core gate-level sim
 // ----------------------------------------------------------------------------
 // Stand-ins for the external ROM/RAM buses exposed by b8008_net_core (see
-// projects/b8008_net/src/b8008_net_core.vhdl). Contract mirrors the VHDL
+// src/b8008_net_core.vhdl in this repo). Contract mirrors the VHDL
 // simulation models used by sim/b8008_net_core_tb.vhdl:
 //   - net_ram (== ram_sync.vhdl behavior): 16384 x 8, synchronous read EVERY
 //     posedge (no CS gating on reads - the CPU's data-bus mux only samples

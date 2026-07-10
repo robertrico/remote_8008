@@ -18,8 +18,8 @@
 // FAIL: timeout, or any byte mismatches.
 //
 // Run via `make sim-netlist` (see Makefile) - this file assumes cwd is
-// projects/b8008_net (net_rom's ROM_FILE path in this module is relative to
-// that directory).
+// the remote_8008 repo root (net_rom's ROM_FILE path in this module is
+// relative to that directory).
 // ----------------------------------------------------------------------------
 
 // No `timescale directive: the GHDL-emitted netlist and ghdl_gates.v carry

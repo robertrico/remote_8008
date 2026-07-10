@@ -161,12 +161,15 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
-# The litex / liteeth / migen / litex_boards *clones* live next to this file.
-# setuptools' editable-install finder runs AFTER PathFinder, so any sys.path
-# entry that contains a `litex/` (etc.) directory shadows the editable install
-# as a bare namespace package (ImportError: cannot import name 'get_data_mod').
-# Running `python versa_soc.py` puts this dir on sys.path[0], triggering exactly
-# that. Drop it before importing litex, then re-append for the local imports.
+# The litex / liteeth / migen / litex_boards *clones* live at the repo root,
+# not next to this file (this script is in soc/). setuptools' editable-install
+# finder runs AFTER PathFinder, so any sys.path entry that contains a
+# `litex/` (etc.) directory shadows the editable install as a bare namespace
+# package (ImportError: cannot import name 'get_data_mod'). Running
+# `python versa_soc.py` puts this dir on sys.path[0]; since this dir doesn't
+# hold those clones the drop below is a no-op today, but it's kept as a guard
+# in case that ever changes. Drop it before importing litex, then re-append
+# for the local imports.
 _drop = [p for p in sys.path if os.path.abspath(p or os.getcwd()) == _HERE]
 sys.path = [p for p in sys.path if os.path.abspath(p or os.getcwd()) != _HERE]
 

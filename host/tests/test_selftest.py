@@ -1,5 +1,5 @@
 # Task 10 -- FakeBoard unit tests for the pure + board-interaction helpers in
-# projects/b8008_net/host_selftest.py (written in Task 9, deferred here).
+# soc/host_selftest.py (written in Task 9, deferred here).
 #
 # host_selftest.py lives in soc/ (repo root's soc/ dir), outside the
 # b8008net package, and its top-level imports are stdlib-only (argparse,

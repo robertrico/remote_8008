@@ -1,4 +1,4 @@
-# projects/b8008_net/Makefile
+# remote_8008 Makefile
 SHELL := /bin/bash
 .SHELLFLAGS := -o pipefail -c
 

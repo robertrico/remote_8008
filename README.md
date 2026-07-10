@@ -89,6 +89,12 @@ parity against the serial-era monitor — remain.
    checkout lives elsewhere.
 4. `make litex-env` — sets up the pinned LiteX toolchain (LiteX `2026.04`)
    in a local `.venv`.
+5. **RISC-V cross gcc** (`riscv64-unknown-elf-gcc`) on `PATH`: required by
+   `make firmware`/`make build` to compile the VexRiscv firmware. On
+   macOS/Homebrew, that gcc's `cc1` also needs `brew install isl mpfr` —
+   without them, missing/unlinked dylibs make `cc1` crash with a misleading
+   "internal compiler error"; if you hit that, diagnose with `otool -L` on
+   `cc1` to see which dylib is missing.
 
 ## Build/test commands
 
