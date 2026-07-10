@@ -1,0 +1,52 @@
+import os
+
+import pytest
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_CORE_V = os.path.join(_HERE, "build", "b8008_net_core.v")
+_ROM_MEM = os.path.join(_HERE, "..", "b8008_monitor", "src", "rom_baked.mem")
+
+
+@pytest.mark.skipif(
+    not os.path.exists(_CORE_V),
+    reason="build/b8008_net_core.v missing -- run `make convert` first",
+)
+def test_elaborates(tmp_path):
+    from migen import ClockDomain
+    from litex.gen import LiteXModule
+    from litex.build.generic_platform import Pins
+    from litex.build.lattice import LatticeECP5Platform
+
+    from b8008_integration import B8008Core
+
+    # minimal fake platform good enough for finalization
+    class P(LatticeECP5Platform):
+        default_clk_name = "clk"
+
+        def __init__(self):
+            super().__init__(
+                "LFE5UM5G-45F-8BG381C",
+                [("clk", 0, Pins("P3"))],
+                toolchain="trellis",
+            )
+
+    class Top(LiteXModule):
+        def __init__(self, platform):
+            self.cd_sys = ClockDomain("sys")
+            self.cd_b8008 = ClockDomain("b8008")
+            self.core = B8008Core(
+                platform, sys_clk_freq=75e6, core_v=_CORE_V, rom_init=[0] * 4096
+            )
+
+    top = Top(P())
+    from migen.fhdl.verilog import convert
+
+    v = str(convert(top, ios=set()))
+    assert "b8008_net_core" in v
+
+
+def test_rom_init_loader():
+    from b8008_integration import load_mem_file
+
+    words = load_mem_file(_ROM_MEM)
+    assert len(words) == 4096 and all(0 <= w < 256 for w in words)

@@ -1,0 +1,23 @@
+.venv/
+build/
+obj_dir/
+__pycache__/
+*.egg-info/
+litex_setup.py
+# litex_setup.py-vendored clones (re-created by `make litex-env`)
+litex/
+litex-boards/
+migen/
+liteeth/
+litedram/
+litei2c/
+liteiclink/
+litejesd204b/
+litepcie/
+litesata/
+litescope/
+litesdcard/
+litespi/
+pythondata-*/
+*.log
+.superpowers/

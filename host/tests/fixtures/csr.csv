@@ -1,0 +1,20 @@
+#--------------------------------------------------------------------------------
+# Trimmed fixture, hand-copied from build/versa/csr.csv (real build, Task 7/8).
+# Keeps only what Task 10's tests touch: the b8008_* CSR bank, eb_ip_ip, the
+# b8008_ram memory region, and the constants CSRBuilder/Board require.
+#--------------------------------------------------------------------------------
+csr_base,b8008,0xf0000000,,
+csr_base,eb_ip,0xf0001000,,
+csr_base,identifier_mem,0xf0002800,,
+csr_register,b8008_ctl,0xf0000000,1,rw
+csr_register,b8008_status,0xf0000004,1,ro
+csr_register,b8008_rxtx,0xf0000008,1,rw
+csr_register,b8008_rxlevel,0xf000000c,1,ro
+csr_register,b8008_txfull,0xf0000010,1,ro
+csr_register,b8008_rxempty,0xf0000014,1,ro
+csr_register,eb_ip_ip,0xf0001000,1,rw
+constant,config_csr_data_width,32,,
+constant,config_bus_address_width,32,,
+constant,config_identifier,b8008_net 2026-07-09 16:13:33,,
+memory_region,b8008_ram,0x90000000,65536,io
+memory_region,csr,0xf0000000,65536,io

@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "b8008net"
+version = "0.1.0"
+description = "Host CLI for the b8008_net Intel-8008-over-Ethernet FPGA monitor."
+requires-python = ">=3.9"
+dependencies = [
+    "litex",
+]
+
+[project.scripts]
+b8008net = "b8008net.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["b8008net*"]
