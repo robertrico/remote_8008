@@ -1,0 +1,24 @@
+CAPI=2:
+name: greygiant:retro:remote-8008:0.1
+description: LiteX Etherbone monitor SoC around the b8008 core (netlist consumer).
+filesets:
+  wrapper:
+    depend: [greygiant:retro:b8008]
+    files:
+      - src/rom_4kx8_bram.vhdl
+      - src/b8008_net_core.vhdl
+    file_type: vhdlSource-2008
+generate:
+  b8008_net_netlist:
+    generator: ghdl_synth_verilog
+    parameters:
+      top: b8008_net_core
+      output: b8008_net_core.v
+      extra_files:
+        - src/rom_4kx8_bram.vhdl
+        - src/b8008_net_core.vhdl
+targets:
+  default:
+    filesets: [wrapper]
+    generate: [b8008_net_netlist]
+    toplevel: b8008_net_core

@@ -32,7 +32,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 # The GHDL netlist instantiates gate_mdff / gate_midff primitives defined here;
 # without this source the LiteX/yosys build fails its hierarchy check. Resolve
 # absolutely from this file so it works regardless of the caller's cwd.
-_GHDL_GATES = os.path.abspath(os.path.join(_HERE, "..", "..", "src", "synth", "ghdl_gates.v"))
+_GHDL_GATES = os.path.abspath(os.path.join(_HERE, "..", "build", "ghdl_gates.v"))
 
 
 def load_mem_file(path):

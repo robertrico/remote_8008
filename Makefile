@@ -47,10 +47,13 @@ stock-sanity:
 GHDL_FLAGS ?= --std=08 --work=work
 CORE_WORKDIR := build/core
 
-ROOT_DIR := ../..
-SRC_DIR  := $(ROOT_DIR)/src/b8008
-COMP_DIR := $(ROOT_DIR)/src/components
-MON_DIR  := ../b8008_monitor/src
+# Core repo location — the single knob (see README).
+CORE_DIR ?= $(HOME)/Development/intel-8008-vhdl
+
+SRC_DIR  := $(CORE_DIR)/src/b8008
+COMP_DIR := $(CORE_DIR)/src/components
+# rom_4kx8_bram.vhdl copied in at extraction
+MON_DIR  := src
 
 # Ordered b8008 core sources (mirrors B8008_SRCS in projects/project.mk).
 B8008_SRCS := \
@@ -105,32 +108,40 @@ sim-core:
 	    --ieee-asserts=disable-at-0
 
 # ============================================================================
-# convert: GHDL --synth, VHDL -> Verilog netlist for b8008_net_core
+# convert: FuseSoC-generated VHDL -> Verilog netlist for b8008_net_core
 # ============================================================================
-# Reuses B8008_SRCS/CORE_SRCS verbatim - the proven compile order from
-# sim-core above (byte-identical to projects/project.mk's B8008_SRCS, plus
-# the monitor peripherals b8008_net_core wires up). rom_4kx8_bram.vhdl in
-# CORE_SRCS is analyzed but not instantiated by b8008_net_core (the core
-# exposes an external ROM bus instead), so it is simply absent from the
-# elaborated netlist - GHDL --synth only elaborates the given top unit,
-# so leaving it in the analyze step is harmless.
+# The b8008 core VHDL now lives in the intel-8008-vhdl repo (CORE_DIR) and is
+# consumed via FuseSoC: remote_8008.core depends on greygiant:retro:b8008 and
+# invokes its ghdl_synth_verilog generator (extra_files: this repo's
+# rom_4kx8_bram.vhdl + b8008_net_core.vhdl wrapper), which GHDL --synths the
+# core's own rtl+debug_io filesets plus our extra_files into a single Verilog
+# netlist. See intel-8008-vhdl/docs/fusesoc.md for the full generator
+# contract this rule follows (cross-repo --cores-root form, copy-out path
+# pattern, the depend: requirement in remote_8008.core).
 #
-# GHDL_GATES (src/synth/ghdl_gates.v) is NOT read here - it is a Verilog
-# primitive library for whatever reads this netlist next (yosys /
-# verilator), not for GHDL itself.
+# rm -rf build/fusesoc before each run: --cores-root . scans recursively, so
+# a stale generated .core left under build/fusesoc/ from a prior run would be
+# rediscovered on the next one (duplicate-VLNV confusion / stale find hits).
+#
+# GHDL_GATES (build/ghdl_gates.v) is the generator's own copy of the Verilog
+# primitive library (gate_mdff/gate_midff) - not read by GHDL itself, but
+# needed by whatever reads this netlist next (yosys / verilator).
 # ============================================================================
-CONVERT_WORKDIR := build
-GHDL_GATES := ../../src/synth/ghdl_gates.v
+GHDL_GATES  := build/ghdl_gates.v
 NETLIST_TOP := b8008_net_core
 NETLIST_V   := build/b8008_net_core.v
+FUSESOC     ?= fusesoc
 
-$(NETLIST_V): $(B8008_SRCS) $(CORE_SRCS)
-	@mkdir -p $(CONVERT_WORKDIR)
-	$(GHDL) -a $(GHDL_FLAGS) --workdir=$(CONVERT_WORKDIR) \
-	    $(B8008_SRCS) $(CORE_SRCS)
-	$(GHDL) --synth $(GHDL_FLAGS) --workdir=$(CONVERT_WORKDIR) \
-	    --out=verilog $(NETLIST_TOP) > $(NETLIST_V)
-	@echo "Verilog: $(NETLIST_V) ($$(wc -l < $(NETLIST_V)) lines)"
+# Prereqs keep the OLD rule's core-VHDL sensitivity: a core repo edit must
+# regenerate the netlist (core and consumer co-evolve during this phase).
+$(NETLIST_V): remote_8008.core $(B8008_SRCS) $(CORE_SRCS)
+	@mkdir -p build
+	rm -rf build/fusesoc
+	$(FUSESOC) --cores-root $(CORE_DIR) --cores-root . \
+	    run --setup --tool icarus --build-root build/fusesoc greygiant:retro:remote-8008
+	cp "$$(find build/fusesoc -path '*/src/*' -name b8008_net_core.v | head -1)" $(NETLIST_V)
+	cp "$$(find build/fusesoc -path '*/src/*' -name ghdl_gates.v | head -1)" $(GHDL_GATES)
+	@head -3 $(NETLIST_V)
 
 .PHONY: convert
 convert: $(NETLIST_V)
@@ -146,8 +157,8 @@ convert: $(NETLIST_V)
 # verilator's --binary run finishes this whole 450 ms budget in a few
 # seconds of wall clock; give it minutes of headroom anyway.
 # ============================================================================
-# sim/netlist_tb.v hardcodes the ROM path relative to this directory
-# (projects/b8008_net), which is the cwd when ./obj_dir/netlist_tb runs.
+# sim/netlist_tb.v hardcodes the ROM path relative to this directory (repo
+# root), which is the cwd when ./obj_dir/netlist_tb runs.
 NETLIST_TB := sim/netlist_tb.v
 MODELS_V   := sim/models.v
 VERILATOR  := $(OSS_CAD_SUITE)/verilator
@@ -182,7 +193,7 @@ BENCH_MDIR   := build/obj_bench
 
 .PHONY: sim-bench
 sim-bench: $(NETLIST_V)
-	$(PY) bench_core.py
+	$(PY) soc/bench_core.py
 	$(VERILATOR) --cc --exe --build -Wno-fatal \
 	    --top-module bench_core \
 	    --Mdir $(BENCH_MDIR) \
@@ -220,7 +231,7 @@ SW_VARIABLES := $(VERSA_DIR)/software/include/generated/variables.mak
 
 $(SW_VARIABLES): | $(NETLIST_V)
 	@mkdir -p $(VERSA_DIR)
-	$(PY) versa_soc.py --build --output-dir $(VERSA_DIR) --csr-csv $(VERSA_DIR)/csr.csv \
+	$(PY) soc/versa_soc.py --build --output-dir $(VERSA_DIR) --csr-csv $(VERSA_DIR)/csr.csv \
 	    --no-compile-gateware
 	test -f $(SW_VARIABLES)
 	@echo "bootstrap: $(SW_VARIABLES)"
@@ -262,7 +273,7 @@ firmware: $(SW_VARIABLES)
 .PHONY: build
 build: convert firmware
 	@mkdir -p $(VERSA_DIR)
-	$(PY) versa_soc.py --build --output-dir $(VERSA_DIR) --csr-csv $(VERSA_DIR)/csr.csv \
+	$(PY) soc/versa_soc.py --build --output-dir $(VERSA_DIR) --csr-csv $(VERSA_DIR)/csr.csv \
 	    --integrated-rom-init $(FIRMWARE_BIN) --no-compile-software
 	test -f $(VERSA_BIT)
 	@echo "bitstream: $(VERSA_BIT)"
