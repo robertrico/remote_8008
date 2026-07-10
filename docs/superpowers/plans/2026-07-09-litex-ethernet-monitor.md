@@ -361,7 +361,7 @@ Do NOT hand-roll the source list. `projects/project.mk` already solves this: an 
 
 ```make
 # Copy project.mk's ordered B8008_SRCS block verbatim into this Makefile
-# (do NOT `include ../project.mk` — it drags in default targets and
+# (do NOT `include $(CORE_DIR)/projects/project.mk` — it drags in default targets and
 # PROJECT_SRCS wildcard machinery this Makefile isn't shaped for).
 CORE_SRCS := $(B8008_SRCS) $(CORE_DIR)/src/components/usart.vhdl \
              $(monitor b8008_usart source, from projects/b8008_monitor/Makefile's list) \
@@ -802,7 +802,7 @@ Run → FAIL.
 
 - [ ] **Step 3: Prepare the hardware-stage test program**
 
-Assemble one existing RAM-targeted program from the L/G workflow now (`cd ../b8008_monitor && make assemble PROG=...`) and record its path in the Task 14 checklist — the live load/peek/run smoke happens on hardware (Task 9 decision).
+Assemble one existing RAM-targeted program from the L/G workflow now (`cd $(CORE_DIR)/projects/b8008_monitor && make assemble PROG=...`) and record its path in the Task 14 checklist — the live load/peek/run smoke happens on hardware (Task 9 decision).
 
 - [ ] **Step 4: Commit**
 
