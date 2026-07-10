@@ -99,11 +99,28 @@ make sim-core           # GHDL behavioral boot sim
 make sim-netlist        # Verilator gate-level netlist boot sim
 make sim-bench          # Verilator CSR/wishbone bench (pre-hardware gate)
 
-make firmware           # build the VexRiscv DHCP/identity firmware
-make build              # full bitstream -> build/versa/gateware/versa_soc.bit
+make convert             # FuseSoC-generated VHDL -> Verilog netlist (build/b8008_net_core.v)
+make bootstrap-headers   # fresh checkout only: SoC software-only build -> generated
+                          # headers/archives (csr.h, regions.ld, libbase/...) that
+                          # `make firmware` links against. Run this BEFORE `make firmware`
+                          # on a clean checkout, or `firmware`'s $(SW_VARIABLES) prereq
+                          # is circular (it needs a SoC build; `build` needs firmware).
+make firmware            # build the VexRiscv DHCP/identity firmware
+make build               # full bitstream -> build/versa/gateware/versa_soc.bit
+                          # (runs `convert` + `firmware` as prerequisites)
 
+# host test suite needs pytest + the b8008net package installed into .venv
+# (litex-env only installs the LiteX toolchain itself):
+.venv/bin/python -m pip install pytest
+.venv/bin/python -m pip install -e host
 .venv/bin/python -m pytest host/tests   # b8008net host package test suite
 ```
+
+Proven ordering on a fresh checkout: `make litex-env` → `make bootstrap-headers` →
+`make firmware` → `make build` (or just `make build`, since it pulls in `convert`
+and `firmware`, but `firmware` itself needs `bootstrap-headers` run first on a
+clean tree — see the Makefile's `bootstrap-headers` comment block for why the
+dependency can't be made automatic without a circular `build`/`firmware` edge).
 
 ## Continuing this work
 

@@ -1,11 +1,11 @@
 # Task 10 -- FakeBoard unit tests for the pure + board-interaction helpers in
 # projects/b8008_net/host_selftest.py (written in Task 9, deferred here).
 #
-# host_selftest.py lives one directory above host/ (project root), outside
-# the b8008net package, and its top-level imports are stdlib-only (argparse,
+# host_selftest.py lives in soc/ (repo root's soc/ dir), outside the
+# b8008net package, and its top-level imports are stdlib-only (argparse,
 # sys, time) -- `from litex...` is deferred inside main(). We load it by
 # file path with importlib so this test file never touches sys.path (the
-# project root also holds the litex/migen *clones*; adding it to sys.path
+# repo root also holds the litex/migen *clones*; adding it to sys.path
 # would shadow the editable-installed litex package used by test_discovery.py
 # -- see versa_soc.py's sys.path guard comment for the same collision).
 import importlib.util
@@ -14,7 +14,7 @@ import os
 import pytest
 
 _HOST_SELFTEST_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "host_selftest.py")
+    os.path.join(os.path.dirname(__file__), "..", "..", "soc", "host_selftest.py")
 )
 _spec = importlib.util.spec_from_file_location("host_selftest", _HOST_SELFTEST_PATH)
 host_selftest = importlib.util.module_from_spec(_spec)
