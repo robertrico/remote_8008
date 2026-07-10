@@ -21,3 +21,10 @@ litespi/
 pythondata-*/
 *.log
 .superpowers/
+# GHDL/gcc build byproducts (analysis + object files, sim executables)
+*.o
+*.d
+e~*
+b8008_net_core_tb
+# litex_setup.py side-download (companion to litex_setup.py above)
+litex_repos.py

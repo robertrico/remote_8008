@@ -12,27 +12,27 @@
 
 ## Global Constraints
 
-- Existing repo rules apply (CLAUDE.md): never run GHDL directly for the b8008 projects — existing sims go through `make`; new `projects/b8008_net/` targets follow the same pattern via `projects/project.mk` conventions where applicable.
+- Existing repo rules apply (CLAUDE.md): never run GHDL directly for the b8008 projects — existing sims go through `make`; new targets follow the same pattern via `projects/project.mk` conventions where applicable.
 - `projects/b8008_monitor/` is NOT modified by any task. `src/b8008/b8008_top.vhdl` is modified once (Task 3), backward-compatibly; the full regression `./test_programs/verification_scripts/run_all_tests.sh` must stay green after it.
 - All `CLK_FREQ_HZ` generics in new VHDL are explicitly `25_000_000` (defaults are 100 MHz; USART baud silently breaks otherwise).
 - Commit per task when that task's own validation passes. **No commit message may claim hardware-proven behavior before Task 15.** Hardware flashing is done by the user; tasks 13–15 hand over commands and wait (see memory: user flashes, user triggers hardware-validation commits).
 - MAC/IP constants: Etherbone MAC `0x10e2d5000001`, ethmac (CPU) MAC `0x10e2d5000002`, Etherbone UDP port `1234`, Etherbone IP CSR reset `0.0.0.0`. DHCP hostname `b8008`.
 - LiteX pinned: `LITEX_TAG` Makefile variable, set in Task 1 to the newest release tag found via `git ls-remote --tags https://github.com/enjoy-digital/litex.git`.
-- Python for `b8008net` lives in the LiteX venv (`projects/b8008_net/.venv`); tests run with that venv's `python -m pytest`.
+- Python for `b8008net` lives in the LiteX venv (`.venv`); tests run with that venv's `python -m pytest`.
 
 ## File Map
 
 | Path | Responsibility |
 |---|---|
-| `projects/b8008_net/Makefile` | litex-env, convert, build, sim, firmware, prog targets |
-| `projects/b8008_net/versa_soc.py` | LiteX target: CRG, PHY, CPU, etherbone, identifier |
-| `projects/b8008_net/b8008_integration.py` | `B8008Core` Migen module: Instance, memories, wishbone shim, console bridge, control-CSR CDC |
-| `projects/b8008_net/src/b8008_net_core.vhdl` | Pure-logic port of the monitor top (VHDL) |
-| `projects/b8008_net/sim/b8008_net_core_tb.vhdl` | GHDL boot-banner testbench (uses ram_sync/rom_4kx8_bram as behavioral models) |
-| `projects/b8008_net/sim/netlist_tb.v` + `sim/models.v` | iverilog smoke test of the converted netlist |
-| `projects/b8008_net/bench_core.py` + `sim/bench_tb.cpp` | Verilator bench of B8008Core (CSR+wishbone driven directly; no TAP) |
-| `projects/b8008_net/firmware/main.c`, `firmware/dhcp8008.c/.h` | DHCP + IP-CSR firmware |
-| `projects/b8008_net/host/` | `b8008net` package + pytest suite |
+| `Makefile` | litex-env, convert, build, sim, firmware, prog targets |
+| `soc/versa_soc.py` | LiteX target: CRG, PHY, CPU, etherbone, identifier |
+| `soc/b8008_integration.py` | `B8008Core` Migen module: Instance, memories, wishbone shim, console bridge, control-CSR CDC |
+| `src/b8008_net_core.vhdl` | Pure-logic port of the monitor top (VHDL) |
+| `sim/b8008_net_core_tb.vhdl` | GHDL boot-banner testbench (uses ram_sync/rom_4kx8_bram as behavioral models) |
+| `sim/netlist_tb.v` + `sim/models.v` | iverilog smoke test of the converted netlist |
+| `soc/bench_core.py` + `sim/bench_tb.cpp` | Verilator bench of B8008Core (CSR+wishbone driven directly; no TAP) |
+| `firmware/main.c`, `firmware/dhcp8008.c/.h` | DHCP + IP-CSR firmware |
+| `host/` | `b8008net` package + pytest suite |
 | `src/b8008/b8008_top.vhdl` | + `EXTERNAL_RAM` generic and external RAM bus (defaults preserve today's behavior) |
 
 ---
@@ -40,8 +40,8 @@
 ### Task 1: LiteX environment
 
 **Files:**
-- Create: `projects/b8008_net/Makefile`
-- Create: `projects/b8008_net/.gitignore` (`.venv/`, `build/`, `*.v` generated, `__pycache__/`)
+- Create: `Makefile`
+- Create: `.gitignore` (`.venv/`, `build/`, `*.v` generated, `__pycache__/`)
 
 **Interfaces:**
 - Produces: `make litex-env` (idempotent), `$(VENV)/bin/python` with litex/liteeth/litex-boards importable, `LITEX_TAG` pinned.
@@ -54,7 +54,7 @@ Pick the newest plain-release tag; it becomes `LITEX_TAG` below.
 - [ ] **Step 2: Write the Makefile (env portion)**
 
 ```make
-# projects/b8008_net/Makefile
+# Makefile
 SHELL := /bin/bash
 .SHELLFLAGS := -o pipefail -c
 
@@ -80,12 +80,12 @@ litex-env:
 
 - [ ] **Step 3: Run it**
 
-Run: `cd projects/b8008_net && make litex-env`
+Run: `make litex-env`
 Expected: ends with `litex OK`.
 
 - [ ] **Step 4: Toolchain sanity — build stock versa target to a bitstream**
 
-Run: `cd projects/b8008_net && $(pwd)/.venv/bin/python -m litex_boards.targets.lattice_versa_ecp5 --device=LFE5UM5G --build --output-dir build/stock_sanity`
+Run: `$(pwd)/.venv/bin/python -m litex_boards.targets.lattice_versa_ecp5 --device=LFE5UM5G --build --output-dir build/stock_sanity`
 (Exact module name: `ls .venv/**/litex_boards/targets/ | grep -i versa` first; use what exists.)
 Expected: `build/stock_sanity/gateware/*.bit` exists. This proves yosys/nextpnr/ecppack wiring end-to-end.
 
@@ -97,7 +97,7 @@ If absent: `brew tap riscv-software-src/riscv && brew install riscv-tools` (or t
 - [ ] **Step 6: Commit**
 
 ```bash
-git add projects/b8008_net/Makefile projects/b8008_net/.gitignore
+git add Makefile .gitignore
 git commit -m "b8008_net: LiteX environment, pinned tag, stock versa sanity build"
 ```
 
@@ -108,7 +108,7 @@ git commit -m "b8008_net: LiteX environment, pinned tag, stock versa sanity buil
 Proves the one custom mechanism with no stock precedent: a `CSRStorage`-driven IP on the Etherbone UDP/IP core, in hybrid (`with_ethmac=True`) mode.
 
 **Files:**
-- Create: `projects/b8008_net/spike_dynamic_ip.py` (deleted at end of task — spike, not product)
+- Create: `spike_dynamic_ip.py` (deleted at end of task — spike, not product)
 
 **Interfaces:**
 - Produces: the working invocation pattern (recorded as a comment block in `versa_soc.py` later); confirmation that `soc.add_etherbone(..., ip_address=<Signal>, with_ethmac=True)` elaborates, or the fallback wiring if it does not.
@@ -152,7 +152,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: Run, iterate against actual API**
 
-Run: `cd projects/b8008_net && .venv/bin/python spike_dynamic_ip.py`
+Run: `.venv/bin/python spike_dynamic_ip.py`
 Expected: `ELABORATED OK`. If `add_etherbone` rejects a Signal or a kwarg name differs, read `.venv/**/litex/soc/integration/soc.py` `add_etherbone` (~line 2615 per review) and either (a) fix kwarg names, or (b) fall back to hand-instantiating `LiteEthUDPIPCore(ip_address=<Signal>)` + `LiteEthEtherbone` exactly as `add_etherbone` does internally, with the Signal substituted. Keep iterating until ELABORATED OK.
 
 - [ ] **Step 3: Also verify verilog generation**
@@ -161,10 +161,10 @@ After finalize: `from litex.soc.integration.builder import Builder; Builder(soc,
 
 - [ ] **Step 4: Record findings, delete spike, commit note**
 
-Paste the final working invocation into a comment at the top of a new empty `projects/b8008_net/versa_soc.py` (filled in Task 7). `rm spike_dynamic_ip.py`.
+Paste the final working invocation into a comment at the top of a new empty `soc/versa_soc.py` (filled in Task 7). `rm spike_dynamic_ip.py`.
 
 ```bash
-git add projects/b8008_net/versa_soc.py
+git add soc/versa_soc.py
 git commit -m "b8008_net: spike result - dynamic-IP etherbone invocation recorded"
 ```
 
@@ -249,9 +249,9 @@ git commit -m "b8008_top: optional external RAM bus (EXTERNAL_RAM generic), equi
 Port of `projects/b8008_monitor/src/b8008_monitor_top.vhdl` with: no PLL, no pads, no debouncers, no memories, DIP-switch features replaced by ports.
 
 **Files:**
-- Create: `projects/b8008_net/src/b8008_net_core.vhdl`
-- Create: `projects/b8008_net/sim/b8008_net_core_tb.vhdl`
-- Modify: `projects/b8008_net/Makefile` (add `sim-core` target; GHDL flags copied from `projects/project.mk`: `--std=08 --work=work`)
+- Create: `src/b8008_net_core.vhdl`
+- Create: `sim/b8008_net_core_tb.vhdl`
+- Modify: `Makefile` (add `sim-core` target; GHDL flags copied from `projects/project.mk`: `--std=08 --work=work`)
 
 **Interfaces:**
 - Produces the entity every later task instantiates:
@@ -294,12 +294,12 @@ end entity;
 
 - [ ] **Step 1: Write the failing boot testbench**
 
-`sim/b8008_net_core_tb.vhdl`: instantiate `b8008_net_core`; connect `ram_sync` (ADDR_BITS=>13) to the RAM bus and `rom_4kx8_bram` (its `ADDR`/`DATA_OUT`/`CS_N=>'0'` port map exactly as the monitor top's `gen_internal_rom`) to the ROM bus — these ARE the behavioral models, contract-conformant by construction. ROM content: `projects/b8008_monitor/src/rom_baked.mem` via the same mechanism `rom_4kx8_bram` uses today (check its generic/init; mirror the monitor project's sim setup in `projects/b8008_monitor/sim/monitor_boot_tb.vhdl` — copy its UART-decode procedure verbatim). Drive `clk` at 25 MHz, pulse `rst`, hold ctl inputs at '0' (auto-start must boot it — that's the test). Decode `uart_tx` at 115200 and assert the first banner bytes match the banner text taken from `projects/b8008_monitor/b8008_monitor.asm` (note: `monitor_boot_tb` itself only checks the first byte — the string must come from the asm, not the TB). Timeout 450 ms sim time (banner arrives ~400 ms: POR + firmware `delay_short`). PASS/FAIL report.
+`sim/b8008_net_core_tb.vhdl`: instantiate `b8008_net_core`; connect `ram_sync` (ADDR_BITS=>13) to the RAM bus and `rom_4kx8_bram` (its `ADDR`/`DATA_OUT`/`CS_N=>'0'` port map exactly as the monitor top's `gen_internal_rom`) to the ROM bus — these ARE the behavioral models, contract-conformant by construction. ROM content: `src/rom_baked.mem` via the same mechanism `rom_4kx8_bram` uses today (check its generic/init; mirror the monitor project's sim setup in `projects/b8008_monitor/sim/monitor_boot_tb.vhdl` — copy its UART-decode procedure verbatim). Drive `clk` at 25 MHz, pulse `rst`, hold ctl inputs at '0' (auto-start must boot it — that's the test). Decode `uart_tx` at 115200 and assert the first banner bytes match the banner text taken from `projects/b8008_monitor/b8008_monitor.asm` (note: `monitor_boot_tb` itself only checks the first byte — the string must come from the asm, not the TB). Timeout 450 ms sim time (banner arrives ~400 ms: POR + firmware `delay_short`). PASS/FAIL report.
 
 - [ ] **Step 2: Add `sim-core` target, run, verify fail**
 
 Makefile target analyzes: all of `src/b8008/*.vhdl`, `src/components/rom_4kx8.vhdl` equivalents used by the monitor sim (copy the analyze list from `projects/b8008_monitor/Makefile`), then `src/b8008_net_core.vhdl`, then the TB.
-Run: `cd projects/b8008_net && make sim-core`
+Run: `make sim-core`
 Expected: FAIL — `b8008_net_core` not found.
 
 - [ ] **Step 3: Write the wrapper**
@@ -334,13 +334,13 @@ end process;
 
 - [ ] **Step 4: Run to pass**
 
-Run: `cd projects/b8008_net && make sim-core`
+Run: `make sim-core`
 Expected: PASS — banner decoded, headless auto-start proven.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add projects/b8008_net/src/b8008_net_core.vhdl projects/b8008_net/sim/b8008_net_core_tb.vhdl projects/b8008_net/Makefile
+git add src/b8008_net_core.vhdl sim/b8008_net_core_tb.vhdl Makefile
 git commit -m "b8008_net: pure-logic core wrapper boots monitor headless in sim"
 ```
 
@@ -349,8 +349,8 @@ git commit -m "b8008_net: pure-logic core wrapper boots monitor headless in sim"
 ### Task 5: Netlist conversion + iverilog smoke
 
 **Files:**
-- Create: `projects/b8008_net/sim/netlist_tb.v`, `projects/b8008_net/sim/models.v`
-- Modify: `projects/b8008_net/Makefile` (`convert`, `sim-netlist` targets)
+- Create: `sim/netlist_tb.v`, `sim/models.v`
+- Modify: `Makefile` (`convert`, `sim-netlist` targets)
 
 **Interfaces:**
 - Produces: `build/b8008_net_core.v` — the only VHDL-derived artifact later tasks consume; module name `b8008_net_core`, ports exactly as Task 4.
@@ -363,10 +363,10 @@ Do NOT hand-roll the source list. `projects/project.mk` already solves this: an 
 # Copy project.mk's ordered B8008_SRCS block verbatim into this Makefile
 # (do NOT `include ../project.mk` — it drags in default targets and
 # PROJECT_SRCS wildcard machinery this Makefile isn't shaped for).
-CORE_SRCS := $(B8008_SRCS) ../../src/components/usart.vhdl \
+CORE_SRCS := $(B8008_SRCS) $(CORE_DIR)/src/components/usart.vhdl \
              $(monitor b8008_usart source, from projects/b8008_monitor/Makefile's list) \
              src/b8008_net_core.vhdl
-GHDL_GATES := ../../src/synth/ghdl_gates.v
+GHDL_GATES := $(CORE_DIR)/src/synth/ghdl_gates.v
 build/b8008_net_core.v: $(CORE_SRCS)
 	mkdir -p build
 	cd build && $(GHDL) -a --std=08 --work=work $(addprefix ../,$(CORE_SRCS))
@@ -390,7 +390,7 @@ Note `$(GHDL_GATES)` in the source list — mandatory. Expect minutes of wall cl
 - [ ] **Step 4: Commit**
 
 ```bash
-git add projects/b8008_net/sim/netlist_tb.v projects/b8008_net/sim/models.v projects/b8008_net/Makefile
+git add sim/netlist_tb.v sim/models.v Makefile
 git commit -m "b8008_net: ghdl->verilog conversion verified by netlist boot sim"
 ```
 
@@ -399,12 +399,12 @@ git commit -m "b8008_net: ghdl->verilog conversion verified by netlist boot sim"
 ### Task 6: `B8008Core` Migen integration module
 
 **Files:**
-- Create: `projects/b8008_net/b8008_integration.py`
-- Create: `projects/b8008_net/test_integration.py` (elaboration unit test)
+- Create: `soc/b8008_integration.py`
+- Create: `soc/test_integration.py` (elaboration unit test)
 
 **Interfaces:**
 - Consumes: `build/b8008_net_core.v` (Task 5), port names from Task 4.
-- Produces: `class B8008Core(LiteXModule)` with: `.bus_ram` (wishbone.Interface, slave, 16384×32-bit words, byte per word, word index == absolute 14-bit 8008 address), CSRs `ctl` (fields `run_stop, step_cycle, step_sync, int_req, int_vector[3]`), `status` (fields `is_running, triggered, tx_busy`), `console` sub-CSRs (`rxtx` 8-bit read-pop/write-push, `rxlevel`, `txfull`, `rxempty`), constructor `B8008Core(platform, sys_clk_freq, core_v="build/b8008_net_core.v", rom_init=<list[int] 4096>)` — **`sys_clk_freq` is an explicit required arg** (platforms do not carry it; a `hasattr` fallback silently mis-clocks the console baud divisor). Requires clock domain `"b8008"` to exist. Constructor also does `platform.add_source("../../src/synth/ghdl_gates.v")` alongside `core_v` — the GHDL netlist instantiates `gate_mdff`/`gate_midff` primitives defined there; without it the LiteX yosys build fails hierarchy check.
+- Produces: `class B8008Core(LiteXModule)` with: `.bus_ram` (wishbone.Interface, slave, 16384×32-bit words, byte per word, word index == absolute 14-bit 8008 address), CSRs `ctl` (fields `run_stop, step_cycle, step_sync, int_req, int_vector[3]`), `status` (fields `is_running, triggered, tx_busy`), `console` sub-CSRs (`rxtx` 8-bit read-pop/write-push, `rxlevel`, `txfull`, `rxempty`), constructor `B8008Core(platform, sys_clk_freq, core_v="build/b8008_net_core.v", rom_init=<list[int] 4096>)` — **`sys_clk_freq` is an explicit required arg** (platforms do not carry it; a `hasattr` fallback silently mis-clocks the console baud divisor). Requires clock domain `"b8008"` to exist. Constructor also does `platform.add_source("$(CORE_DIR)/src/synth/ghdl_gates.v")` alongside `core_v` — the GHDL netlist instantiates `gate_mdff`/`gate_midff` primitives defined there; without it the LiteX yosys build fails hierarchy check.
 
 - [ ] **Step 1: Write the failing elaboration test**
 
@@ -434,7 +434,7 @@ def test_elaborates(tmp_path):
 
 def test_rom_init_loader():
     from b8008_integration import load_mem_file
-    words = load_mem_file("../b8008_monitor/src/rom_baked.mem")
+    words = load_mem_file("src/rom_baked.mem")
     assert len(words) == 4096 and all(0 <= w < 256 for w in words)
 ```
 
@@ -528,7 +528,7 @@ class B8008Core(LiteXModule, AutoCSR):
         # from the installed litex uart.py — assert against it in Step 3.
         # ---- the VHDL core ----------------------------------------------
         platform.add_source(core_v)
-        platform.add_source("../../src/synth/ghdl_gates.v")  # gate_mdff/gate_midff defs
+        platform.add_source("$(CORE_DIR)/src/synth/ghdl_gates.v")  # gate_mdff/gate_midff defs
         self.specials += Instance("b8008_net_core",
             i_clk=ClockSignal("b8008"), i_rst=ResetSignal("b8008"),
             o_uart_tx=pads.rx,  # core TX -> bridge RX
@@ -560,7 +560,7 @@ Read `.venv/**/litex/soc/cores/uart.py` `UART.__init__` — copy its exact `rxtx
 Run: `.venv/bin/python -m pytest test_integration.py -v` → 2 PASS.
 
 ```bash
-git add projects/b8008_net/b8008_integration.py projects/b8008_net/test_integration.py
+git add soc/b8008_integration.py soc/test_integration.py
 git commit -m "b8008_net: B8008Core Migen integration - memories, console bridge, control CDC"
 ```
 
@@ -569,8 +569,8 @@ git commit -m "b8008_net: B8008Core Migen integration - memories, console bridge
 ### Task 7: `versa_soc.py` — full SoC builds to bitstream
 
 **Files:**
-- Modify: `projects/b8008_net/versa_soc.py` (has the Task 2 invocation comment)
-- Modify: `projects/b8008_net/Makefile` (`build`, `prog`, `check-synth` targets)
+- Modify: `soc/versa_soc.py` (has the Task 2 invocation comment)
+- Modify: `Makefile` (`build`, `prog`, `check-synth` targets)
 
 **Interfaces:**
 - Consumes: `B8008Core` (Task 6), spike invocation (Task 2).
@@ -582,7 +582,7 @@ Based on the stock versa target (Task 1 module) with these deltas:
 1. CRG: extend the stock `_CRG` — add `self.cd_b8008 = ClockDomain()` and `pll.create_clkout(self.cd_b8008, 25e6)`; keep sys at the stock 75 MHz.
 2. `SoCCore` args: `cpu_type="vexriscv", cpu_variant="minimal", integrated_rom_size=0x8000, integrated_sram_size=0x2000, uart_name="stub", ident="b8008_net", ident_version=True, timer=True` (identifier CSR is the staleness check hook).
 3. `self.submodules.eb_ip = ...` + `add_etherbone(...)` exactly per the Task 2 spike result (Signal-driven IP, `with_ethmac=True`, **`buffer_depth=255`** — the default 16 silently overflows on 255-word burst writes and would surface as verify failures on hardware day, both MACs from Global Constraints).
-4. `self.submodules.b8008 = B8008Core(platform, sys_clk_freq=sys_clk_freq, rom_init=load_mem_file("../b8008_monitor/src/rom_baked.mem"))`; `self.bus.add_slave("b8008_ram", self.b8008.bus_ram, SoCRegion(origin=0x9000_0000, size=0x10000, cached=False))` (16384 words × 4 bytes = 0x10000; word index == absolute 8008 address per Task 4 finding).
+4. `self.submodules.b8008 = B8008Core(platform, sys_clk_freq=sys_clk_freq, rom_init=load_mem_file("src/rom_baked.mem"))`; `self.bus.add_slave("b8008_ram", self.b8008.bus_ram, SoCRegion(origin=0x9000_0000, size=0x10000, cached=False))` (16384 words × 4 bytes = 0x10000; word index == absolute 8008 address per Task 4 finding).
 5. Route `self.b8008.dbg` record to the X3 expansion pads: add a platform extension with the same sites the monitor LPF uses for `cpu_d[0..7]`, `cpu_s0..2`, `cpu_sync`, `cpu_phi1/2`, `cpu_int` (copy sites from `projects/b8008_monitor/constraints/b8008_monitor.lpf`).
 6. `--build` CLI via `LiteXArgumentParser` as in the stock target; also emit `csr.csv` (`--csr-csv build/versa/csr.csv`).
 
@@ -609,7 +609,7 @@ Expected: bitstream + csr.csv exist; `grep b8008_rxtx build/versa/csr.csv` hits;
 - [ ] **Step 4: Commit**
 
 ```bash
-git add projects/b8008_net/versa_soc.py projects/b8008_net/Makefile
+git add soc/versa_soc.py Makefile
 git commit -m "b8008_net: full SoC builds - etherbone + vexriscv + b8008 core, timing met"
 ```
 
@@ -618,8 +618,8 @@ git commit -m "b8008_net: full SoC builds - etherbone + vexriscv + b8008 core, t
 ### Task 8: DHCP/identity firmware
 
 **Files:**
-- Create: `projects/b8008_net/firmware/main.c`, `firmware/dhcp8008.c`, `firmware/dhcp8008.h`, `firmware/Makefile`, `firmware/linker.ld`, `firmware/crt0.S`
-- Create: `projects/b8008_net/firmware/test_dhcp_host.c` (host-cc unit test of packet builder)
+- Create: `firmware/main.c`, `firmware/dhcp8008.c`, `firmware/dhcp8008.h`, `firmware/Makefile`, `firmware/linker.ld`, `firmware/crt0.S`
+- Create: `firmware/test_dhcp_host.c` (host-cc unit test of packet builder)
 
 **Linker reality:** this firmware REPLACES the BIOS in integrated ROM (`--integrated-rom-init`), executing in place from ROM origin — so it needs a BIOS-style link (text at the `rom` region origin from `build/versa/generated/regions.ld`, data/bss in sram, BIOS-style crt0), NOT the `litex_bare_metal_demo` scaffold (that links for main_ram and expects the BIOS to load it). Crib the Makefile/linker.ld/crt0 from the LiteX BIOS build (`.venv/**/litex/soc/software/bios/`), strip it to main.c + dhcp8008.c + libbase + libliteeth.
 
@@ -661,7 +661,7 @@ Expected: clean build, bitstream regenerated.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add projects/b8008_net/firmware
+git add firmware
 git commit -m "b8008_net: DHCP firmware - option-12 hostname, etherbone-MAC chaddr, renewal"
 ```
 
@@ -672,10 +672,10 @@ git commit -m "b8008_net: DHCP firmware - option-12 hostname, etherbone-MAC chad
 **DECISION (host is macOS, no Docker installed):** litex_sim's Ethernet model needs a Linux TAP interface — dead on modern macOS (tuntaposx kext killed, brew cask gone). So the pre-hardware gate does NOT go over simulated Ethernet. Instead: a Verilator bench drives `B8008Core`'s **CSR bus and wishbone bus directly** — validating exactly the custom logic (wishbone shim, console bridge CSR mechanics, control-CSR CDC, Instance wiring, converted netlist), while Etherbone/LiteEth transport is stock upstream-proven gateware exercised first on real hardware in Task 13. *Optional upgrade, not required:* if Docker/colima is ever installed, a Linux container running litex_sim + litex_server gives the full network-path sim; note it in the README, don't build it now.
 
 **Files:**
-- Create: `projects/b8008_net/bench_core.py` (emits standalone verilog of B8008Core + bench harness)
-- Create: `projects/b8008_net/sim/bench_tb.cpp` (Verilator driver)
-- Modify: `projects/b8008_net/Makefile` (`sim-bench` target)
-- Create: `projects/b8008_net/host_selftest.py` (scripted RemoteClient checks — used on hardware in Tasks 13/14, written and unit-shaped now)
+- Create: `soc/bench_core.py` (emits standalone verilog of B8008Core + bench harness)
+- Create: `sim/bench_tb.cpp` (Verilator driver)
+- Modify: `Makefile` (`sim-bench` target)
+- Create: `soc/host_selftest.py` (scripted RemoteClient checks — used on hardware in Tasks 13/14, written and unit-shaped now)
 
 **Interfaces:**
 - Consumes: converted netlist + `ghdl_gates.v`, `B8008Core`.
@@ -704,7 +704,7 @@ Run: `make sim-bench` → all checks PASS. Iterate here — this is the cheap pl
 - [ ] **Step 5: Commit**
 
 ```bash
-git add projects/b8008_net/bench_core.py projects/b8008_net/sim/bench_tb.cpp projects/b8008_net/host_selftest.py projects/b8008_net/Makefile
+git add soc/bench_core.py sim/bench_tb.cpp soc/host_selftest.py Makefile
 git commit -m "b8008_net: verilator bench - RAM window, console bridge, control CDC pre-hardware"
 ```
 
@@ -713,9 +713,9 @@ git commit -m "b8008_net: verilator bench - RAM window, console bridge, control 
 ### Task 10: `b8008net` skeleton — discovery, lock, connection
 
 **Files:**
-- Create: `projects/b8008_net/host/pyproject.toml` (name `b8008net`, console-script `b8008net = b8008net.cli:main`)
-- Create: `projects/b8008_net/host/b8008net/{__init__.py,cli.py,discovery.py,board.py}`
-- Create: `projects/b8008_net/host/tests/test_discovery.py`, `host/tests/test_selftest.py` (FakeBoard tests for host_selftest.py helpers — deferred from Task 9)
+- Create: `host/pyproject.toml` (name `b8008net`, console-script `b8008net = b8008net.cli:main`)
+- Create: `host/b8008net/{__init__.py,cli.py,discovery.py,board.py}`
+- Create: `host/tests/test_discovery.py`, `host/tests/test_selftest.py` (FakeBoard tests for host_selftest.py helpers — deferred from Task 9)
 
 **Interfaces:**
 - Produces: `Board` class: `Board.connect(csr_csv, host=None) -> Board` (spawns/finds litex_server, identifier check, lockfile at `~/.b8008net.lock`), `.read(addr, n=1, burst="incr")` (pass `burst="fixed"` for FIFO drains), `.write(addr, values)`, `.regs` (RemoteClient regs), `.ram_base` (from csr.csv `b8008_ram`). `discover() -> str|None`: tries cached `~/.b8008net_host`, then `b8008`/`b8008.lan` DNS, then probe sweep.
@@ -740,7 +740,7 @@ Run: pytest → PASS. (Add the thin `cli.py` with `status` subcommand now.) Firs
 - [ ] **Step 4: Commit**
 
 ```bash
-git add projects/b8008_net/host
+git add host
 git commit -m "b8008net: discovery (dns+probe-sweep+cache), lockfile, board connection, status"
 ```
 
@@ -749,9 +749,9 @@ git commit -m "b8008net: discovery (dns+probe-sweep+cache), lockfile, board conn
 ### Task 11: `b8008net console`
 
 **Files:**
-- Create: `projects/b8008_net/host/b8008net/console.py`
-- Modify: `projects/b8008_net/host/b8008net/cli.py`
-- Create: `projects/b8008_net/host/tests/test_console.py`
+- Create: `host/b8008net/console.py`
+- Modify: `host/b8008net/cli.py`
+- Create: `host/tests/test_console.py`
 
 **Interfaces:**
 - Consumes: `Board` (`.regs.b8008_rxtx/rxlevel/txfull/rxempty`).
@@ -773,7 +773,7 @@ pytest PASS. Live console smoke happens on hardware in Task 14 (no network sim o
 - [ ] **Step 4: Commit**
 
 ```bash
-git add projects/b8008_net/host
+git add host
 git commit -m "b8008net: interactive console with batched fifo drains"
 ```
 
@@ -782,9 +782,9 @@ git commit -m "b8008net: interactive console with batched fifo drains"
 ### Task 12: `b8008net` load / peek / poke / run / reset / step
 
 **Files:**
-- Create: `projects/b8008_net/host/b8008net/{hexfile.py,commands.py}`
-- Modify: `projects/b8008_net/host/b8008net/cli.py`
-- Create: `projects/b8008_net/host/tests/{test_hexfile.py,test_commands.py}`
+- Create: `host/b8008net/{hexfile.py,commands.py}`
+- Modify: `host/b8008net/cli.py`
+- Create: `host/tests/{test_hexfile.py,test_commands.py}`
 
 **Interfaces:**
 - Consumes: `Board`, `console.send/drain`, monitor `G`/`L` semantics from `projects/b8008_monitor/b8008_monitor.asm` and the existing `send_hex.py` (read both first — the hex format is whatever `p2hex` emits and `send_hex.py` already parses; mirror it).
@@ -807,7 +807,7 @@ Assemble one existing RAM-targeted program from the L/G workflow now (`cd ../b80
 - [ ] **Step 4: Commit**
 
 ```bash
-git add projects/b8008_net/host
+git add host
 git commit -m "b8008net: load/peek/poke/run/reset/step with read-back verify"
 ```
 
@@ -839,12 +839,12 @@ No new code. Hand the user: `make build && make prog` (or the .bit path for thei
 ### Task 15: HW stage 3 — workflow parity, docs, final gate (USER IN LOOP)
 
 - [ ] `b8008net load` + `run` for **mandelbrot, pi, calc** — outputs match the serial-era results (compare against the validated runs recorded in project memory / prior sessions).
-- [ ] Write `projects/b8008_net/README.md`: what it is, one-time setup (`make litex-env`), build/flash, `b8008net` usage, discovery behavior, demo-layer future note.
+- [ ] Write `README.md`: what it is, one-time setup (`make litex-env`), build/flash, `b8008net` usage, discovery behavior, demo-layer future note.
 - [ ] Update root `README.md` with a short b8008_net section.
 - [ ] Final commits (user-triggered): docs + any held fixes, messages may now say hardware-validated.
 
 ```bash
-git add projects/b8008_net/README.md README.md
+git add README.md
 git commit -m "b8008_net: hardware-validated - monitor over Ethernet (console, load, peek/poke)"
 ```
 
