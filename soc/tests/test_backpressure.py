@@ -126,6 +126,17 @@ def test_stall_holds_through_the_band():
 # the crossing -- that is VPLAN row BP-7 (COCOTB-R), still UNIMPLEMENTED.
 IN_FLIGHT_MARGIN = 3
 
+# A generous cap on frames sent, comfortably above what's actually needed
+# (S_HWM frames to reach the threshold, plus IN_FLIGHT_MARGIN more once
+# observed, plus slack). This exists ONLY to keep the test from hanging
+# forever if a future regression leaves `stall` permanently low -- a
+# `while True` loop that only ever exits via "stall observed, then N more
+# frames" would otherwise never terminate against a DUT where stall never
+# asserts at all, turning a clean red into a stalled CI run. Hitting this
+# cap without ever observing `stall` is itself the failure being tested
+# for and must raise a loud, actionable assertion, not a silent break.
+MAX_FRAMES = S_HWM + IN_FLIGHT_MARGIN + 20
+
 
 def test_no_overflow_under_sustained_pressure():
     """Headroom absorbs the worst-case in-flight bytes still landing after
@@ -137,9 +148,10 @@ def test_no_overflow_under_sustained_pressure():
     dut = ConsoleBridge(**SMALL)
     capacity = dut.rx_fifo.fifo.depth + 1   # SyncFIFOBuffered holds depth+1
     violations, err, levels = [], [], []
+    result = {}
 
     def monitor():
-        for _ in range((S_HWM + IN_FLIGHT_MARGIN + 20) * 100 + 2000):
+        for _ in range((MAX_FRAMES + 5) * 100 + 2000):
             levels.append((yield dut.rx_fifo.level))
             if (yield dut.rx_fifo.sink.valid) and not (yield dut.rx_fifo.sink.ready):
                 violations.append(1)
@@ -154,7 +166,7 @@ def test_no_overflow_under_sustained_pressure():
         i = 0
         stalled = False
         in_flight_remaining = IN_FLIGHT_MARGIN
-        while True:
+        while i < MAX_FRAMES:
             if stalled:
                 if in_flight_remaining <= 0:
                     break
@@ -164,10 +176,19 @@ def test_no_overflow_under_sustained_pressure():
             if not stalled and (yield dut.stall):
                 stalled = True   # observed -- stop feeding NEW bytes after
                                   # IN_FLIGHT_MARGIN more, matching S-BP-6
+        result["stalled"] = stalled
+        result["frames_sent"] = i
+        result["level_at_cap"] = (yield dut.rx_fifo.level)
         for _ in range(200):
             yield
 
     run_simulation(dut, [gen(), monitor()])
+    assert result["stalled"], (
+        f"dut.stall never asserted after {result['frames_sent']} frames "
+        f"(cap {MAX_FRAMES}, rx_fifo.level={result['level_at_cap']} at that "
+        f"point, hwm={dut.hwm}) -- backpressure is not asserting at all, "
+        "not merely slow to react"
+    )
     assert max(levels) <= capacity, \
         f"rx_fifo.level reached {max(levels)}, exceeds capacity {capacity}"
     assert not violations, "a byte was presented to a full rx_fifo"
