@@ -9,11 +9,11 @@
 #   pads.rx  is this bridge's INPUT  -- driven by the core's uart_tx
 #   pads.tx  is this bridge's OUTPUT -- drives the core's uart_rx
 #
-from migen import Record
+from migen import Record, Signal, If
 
 from litex.gen import LiteXModule
 from litex.soc.interconnect import stream
-from litex.soc.interconnect.csr import AutoCSR
+from litex.soc.interconnect.csr import AutoCSR, CSR, CSRStatus, CSRField
 from litex.soc.cores.uart import RS232PHY
 
 RX_DEPTH = 4096   # SPEC.md S-RX-1
@@ -36,4 +36,35 @@ class ConsoleBridge(LiteXModule, AutoCSR):
         self.comb += [
             self.phy.source.connect(self.rx_fifo.sink),   # PHY RX -> rx_fifo
             self.tx_fifo.source.connect(self.phy.sink),   # tx_fifo -> PHY TX
+        ]
+
+        # ---- console_rx: atomic {data, valid, level} (SPEC.md S-RX-8) --------
+        # One read carries everything the host needs, so it can never observe a
+        # torn level/data pair and never needs two round trips on a transport
+        # that costs ~1 RTT per read (S-WIRE-3, S-WIRE-4).
+        self.console_rx = CSRStatus(name="console_rx", fields=[
+            CSRField("data",  size=8),
+            CSRField("valid", size=1),
+            CSRField("level", size=13)])
+        self.comb += [
+            # data reads 0x00 when empty -- S-RX-7's table, not "don't care".
+            If(self.rx_fifo.source.valid,
+                self.console_rx.fields.data.eq(self.rx_fifo.source.data)
+            ).Else(
+                self.console_rx.fields.data.eq(0)
+            ),
+            self.console_rx.fields.valid.eq(self.rx_fifo.source.valid),
+            self.console_rx.fields.level.eq(self.rx_fifo.level),
+        ]
+
+        # ---- console_rx_pop: the ONLY consuming action (SPEC.md S-RX-4) ------
+        # Reads are non-destructive so a retried UDP read cannot eat a byte
+        # (S-RX-5). Consumption moves to the write path, which is not retried.
+        self.console_rx_pop = CSR(name="console_rx_pop")
+        self.err_rx_pop_when_empty = Signal()
+        self.comb += [
+            self.rx_fifo.source.ready.eq(
+                self.console_rx_pop.re & self.rx_fifo.source.valid),
+            self.err_rx_pop_when_empty.eq(
+                self.console_rx_pop.re & ~self.rx_fifo.source.valid),
         ]
