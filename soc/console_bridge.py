@@ -19,6 +19,16 @@ from litex.soc.cores.uart import RS232PHY
 RX_DEPTH = 4096   # SPEC.md S-RX-1
 TX_DEPTH = 256    # SPEC.md S-TX-1
 
+# SPEC.md S-BP-5 / S-BP-6. The headroom below the FIFO depth covers bytes still
+# in flight when the stall asserts -- at most 3 (core USART shift register, PHY
+# receive shift register, and the X3 synchronizer's 2-cycle latency), so 64
+# carries roughly 20x margin. Expressed as offsets from the depth rather than
+# as absolute constants so a small-depth instance stays testable in simulation;
+# at the shipped RX_DEPTH of 4096 these evaluate to exactly the spec's 4032 and
+# 3968, and test_default_thresholds_match_the_spec pins that.
+RX_HEADROOM   = 64
+RX_HYSTERESIS = 64
+
 
 class ConsoleBridge(LiteXModule, AutoCSR):
     def __init__(self, sys_clk_freq, baudrate=115200,
@@ -61,11 +71,22 @@ class ConsoleBridge(LiteXModule, AutoCSR):
         # they can never disagree; `rx_fifo.level` itself (what Task 6's
         # backpressure logic reads directly, not through this CSR) is
         # unchanged.
+        # SPEC.md S-RX-7: the exported range is 0..rx_depth. The underlying
+        # SyncFIFOBuffered holds rx_depth+1 (inner FIFO + output register), so
+        # the raw level can exceed the contract by one. Clamp the export; the
+        # raw signal stays intact for the threshold comparison below -- this
+        # does not depend on backpressure being correct, it holds on its own.
+        rx_level_capped = Signal(max=rx_depth + 1)
+        self.comb += If(self.rx_fifo.level > rx_depth,
+                        rx_level_capped.eq(rx_depth)
+                    ).Else(
+                        rx_level_capped.eq(self.rx_fifo.level))
+
         self.comb += [
             # data reads 0x00 when empty -- S-RX-7's table, not "don't care".
             If(self.rx_fifo.source.valid,
                 self.console_rx.fields.data.eq(self.rx_fifo.source.data),
-                self.console_rx.fields.level.eq(self.rx_fifo.level),
+                self.console_rx.fields.level.eq(rx_level_capped),
             ).Else(
                 self.console_rx.fields.data.eq(0),
                 self.console_rx.fields.level.eq(0),
@@ -139,12 +160,33 @@ class ConsoleBridge(LiteXModule, AutoCSR):
                 self.console_tx_data.re & tx_full),
         ]
 
+        # ---- backpressure (SPEC.md §10) -------------------------------------
+        # S-BP-1: never drop a byte. When the host is slow, the 8008 STOPS.
+        # Legal only because S-PROD-4 makes no real-time promise.
+        # Hysteresis prevents oscillation at the threshold (S-BP-5).
+        self.hwm = rx_depth - RX_HEADROOM
+        self.lwm = self.hwm - RX_HYSTERESIS
+        self.stall = Signal()
+        self.sync += [
+            If(self.rx_fifo.level >= self.hwm,
+                self.stall.eq(1)
+            ).Elif(self.rx_fifo.level <= self.lwm,
+                self.stall.eq(0)
+            )
+        ]
+
         # ---- sticky error bits (SPEC.md §11.5, S-CSR-9, S-CSR-12) -----------
         # Sticky, and survive every reset: a fault that provokes a power cycle
         # must still be visible afterward (S-CSR-10). Set beats a coinciding
         # clear -- losing a fresh fault to a concurrent clear would make these
         # unreliable in exactly the case they exist for.
-        self.err_rx_overflow = Signal()   # driven by the backpressure task
+        self.err_rx_overflow = Signal()   # driven just below
+
+        # S-BP-9: the canary. Under a correct implementation S-BP-8 makes this
+        # unreachable; it exists to catch a regression in the mechanism that
+        # makes it unreachable, not to handle the condition.
+        self.comb += self.err_rx_overflow.eq(
+            self.rx_fifo.sink.valid & ~self.rx_fifo.sink.ready)
 
         self.console_err = CSRStatus(name="console_err", fields=[
             CSRField("rx_overflow",        size=1),
