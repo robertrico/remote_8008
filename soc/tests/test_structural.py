@@ -1,5 +1,7 @@
 """Structural conformance: claims checked by inspecting the elaborated design."""
-from conftest import needs_netlist  # noqa: F401
+import re
+
+from conftest import CORE_V, needs_netlist  # noqa: F401
 
 
 @needs_netlist
@@ -52,3 +54,53 @@ def test_stall_crosses_into_b8008_domain(core_verilog):
     VPLAN: CDC-2
     """
     assert "ext_hold" in core_verilog
+
+
+@needs_netlist
+def test_all_core_input_ports_are_connected(core_verilog):
+    """Every input port `b8008_net_core` declares is wired by the Migen
+    Instance() -- not merely present in the source.
+
+    Task 7 fix round 1 finding: `ctl_run_stop`/`ctl_step_cycle`/
+    `ctl_step_sync`/`ctl_int`/`ctl_int_vector` were dropped from the
+    Instance() call while still declared as VHDL entity inputs with no
+    default value. migen.fhdl.specials.Instance.emit_verilog only emits a
+    port association for kwargs actually passed, so an omitted input isn't
+    tied off -- it is left completely unconnected at the netlist boundary.
+    `ctl_run_stop` fed the run/stop toggle and `ctl_int` fed live interrupt
+    injection, so this was a silent hazard, not a cosmetic one, and nothing
+    in the rest of this suite (all of which only inspects CSR/register-level
+    Python state or greps for specific substrings) would have caught it.
+
+    This test reads the module's actual port declaration straight out of
+    the converted netlist (`build/b8008_net_core.v`, not just what the
+    wrapper *intends* to connect) and cross-checks it against the
+    instantiation Migen actually emits, so a future edit that drops a
+    connection -- for any port, not just the ones retired here -- fails
+    here instead of reaching place-and-route with a floating net.
+
+    Declared VPLAN: CDC-1 rather than STR-6: STR-6 asserts something
+    different (no *multi-bit bus* crosses the domain boundary at all).
+    CDC-1's assertion -- that the crossings into b8008_net_core are exactly
+    the inventoried set (X1/X2/X3) and nothing else -- is the row this test
+    actually backs: an unconnected input is either an undocumented fourth
+    crossing (a floating net masquerading as a signal) or a broken X1/X2/X3,
+    both of which a complete connection inventory rules out.
+
+    VPLAN: CDC-1
+    """
+    with open(CORE_V) as f:
+        netlist = f.read()
+
+    mod = re.search(r"module\s+b8008_net_core\s*\((.*?)\);", netlist, re.S)
+    assert mod, "could not find b8008_net_core's module port declaration"
+    declared_inputs = set(re.findall(
+        r"\binput\s+(?:\[[^\]]+\]\s+)?(\w+)", mod.group(1)))
+    assert declared_inputs, "found no declared input ports to check"
+
+    inst = re.search(r"\bb8008_net_core\s+\S+\s*\((.*?)\);", core_verilog, re.S)
+    assert inst, "no b8008_net_core instantiation found in the elaborated top"
+    connected = set(re.findall(r"\.(\w+)\(", inst.group(1)))
+
+    missing = declared_inputs - connected
+    assert not missing, f"declared input ports left unconnected by Instance(): {missing}"
