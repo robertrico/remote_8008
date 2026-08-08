@@ -42,26 +42,38 @@ The pin list is specified; whatever you hang off it is not.
 
 ## Status
 
-**Spec-first, pre-hardware.** The bitstream builds and the simulation tiers run, but
-nothing here has executed on real silicon, and the test suites have not been run
-against a board.
+**Spec-first, pre-hardware.** The RTL has been corrected against the spec, the
+simulation tiers run, and the bitstream now builds clean through yosys/nextpnr-ecp5/
+ecppack — but nothing here has executed on real silicon, and the test suites have not
+been run against a board.
 
 [`SPEC.md`](SPEC.md) and [`docs/VPLAN.md`](docs/VPLAN.md) were written **before** the
-RTL was corrected, and they are authoritative over it. The verification plan records
-**12 divergences** where the existing gateware disagrees with the spec — including a
-`cd_b8008` reset that never reaches the core, a console register whose destructive
-read loses a byte whenever a UDP reply is dropped, and an RX FIFO that drops bytes
-silently when full.
+RTL was corrected, and they are authoritative over it. The verification plan recorded
+**12 divergences** where the gateware disagreed with the spec — including a
+`cd_b8008` reset that never reached the core, a console register whose destructive
+read lost a byte whenever a UDP reply was dropped, and an RX FIFO that dropped bytes
+silently when full. **11 of the 12 are now resolved.**
+
+The one still open is **D-12**: `SPEC.md` S-CLK-3 requires `cd_sys` and `cd_b8008` to
+be declared as separate clock groups so the timing tool does not attempt to close
+paths between them. LiteX's `add_false_path_constraints()` is confirmed inert for the
+ECP5/Trellis toolchain — the declaration never reaches the generated `.lpf` or
+nextpnr — and the first real build's post-PnR timing report confirms nextpnr-ecp5
+*does* compute and report critical-path timing across the `cd_sys`/`cd_b8008`
+boundary (e.g. `Critical path report for cross-domain path 'posedge
+$glbnet$etherbone_clk' -> 'posedge $glbnet$b8008_clk'`). There is currently no known
+mechanism on this toolchain to suppress that. See the Task 10 report for the full
+evidence.
 
 None of those are surprises. They are the output of specifying the product properly
 before finishing it.
 
 | | |
 |---|---|
-| Verification rows | 119, all `UNIMPLEMENTED` |
+| Verification rows | 119 total — 32 `PASS`, 87 `UNIMPLEMENTED` |
 | Imported assumptions (core repo, never re-run here) | 11 |
-| Divergences from current RTL | 12 |
-| Rows passing | **0** |
+| Divergences resolved | 11 of 12 — **D-12 outstanding** |
+| Rows passing | **32** |
 
 The b8008 core itself is out of scope and treated as verified: 28 module testbenches,
 an exhaustive ALU check over 656,384 cases, 31 program-level verification scripts,

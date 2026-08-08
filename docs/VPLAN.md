@@ -1,7 +1,10 @@
 # remote_8008 — Verification Plan
 
-**Status:** Phases 1–4 complete. All 119 verification rows `UNIMPLEMENTED`; the 11
-imported assumptions are `IMPORTED` and are never run here.
+**Status:** Phases 1–4 complete. 32 of 119 verification rows `PASS`; the rest are
+`UNIMPLEMENTED`. The 11 imported assumptions are `IMPORTED` and are never run here.
+Task 10 ran the first real bitstream build (yosys/nextpnr-ecp5/ecppack); it
+succeeded, but D-12 (`CLK-3`/`CLK-4`) remains open — see `SPEC.md` divergence
+D-12 and the Task 10 report for the empirical finding.
 **Date:** 2026-08-08
 **Contract for:** RTL that does not yet exist.
 **Spec:** [`SPEC.md`](../SPEC.md) — every row cites a `S-<AREA>-<n>` ID.
@@ -89,7 +92,7 @@ re-run. No re-derivation from first principles, and no re-testing here.
 | ID | Spec cite | Assertion | Conditions | Check | Status |
 |---|---|---|---|---|---|
 | RST-1 | S-RST-1, S-RST-2 | Exactly two reset sources reach the design: POR and `rst_n`. No CSR write asserts any reset | elaborated netlist | `PYTEST` fan-in trace of every reset net | UNIMPLEMENTED |
-| RST-2 | S-RST-3, S-RST-4 | `cd_b8008.rst` is driven by an `AsyncResetSynchronizer` whose input is `~pll.locked \| reset` | elaboration | `PYTEST` | UNIMPLEMENTED |
+| RST-2 | S-RST-3, S-RST-4 | `cd_b8008.rst` is driven by an `AsyncResetSynchronizer` whose input is `~pll.locked \| reset` | elaboration | `PYTEST` | PASS |
 | RST-3 | S-RST-4 | `cd_b8008` reset **deasserts** synchronously to `cd_b8008`: the deassert edge occurs within 1 ns of a `cd_b8008` rising edge | 100 randomized PLL-lock arrival phases | `COCOTB-R` | UNIMPLEMENTED |
 | RST-4 | S-RST-4 | `cd_b8008` reset **asserts** asynchronously: assertion is observed at the core's `i_rst` within 1 ns of the source condition, with `cd_b8008` stopped | clock stopped, then reset asserted | `COCOTB-D` | UNIMPLEMENTED |
 | RST-5 | S-RST-5 R2 | POR holds for exactly 65,536 `clk100` cycles (655.36 µs) | cold start | `COCOTB-D` | UNIMPLEMENTED |
@@ -99,50 +102,50 @@ re-run. No re-derivation from first principles, and no re-testing here.
 | RST-9 | S-RST-5 R8, S-CORE-12 | Auto-start fires 50,000 `cd_b8008` cycles (2.000 ms) after core reset deassert, ±1 cycle | cold boot | `COCOTB-D` | UNIMPLEMENTED |
 | RST-10 | S-RST-7 | After boot completes, the first 5 bytes popped from `rx_fifo` are `"8008 "` | full boot | `VBENCH`, then `HW` | UNIMPLEMENTED |
 | RST-11 | S-RST-8 | Immediately after reset deassert: `console_rx=0x00000000` and `console_tx=0x00000000` | read before the core emits its first byte | `COCOTB-D` | UNIMPLEMENTED |
-| RST-11a | S-RST-8 | On a **cold** power-on with no prior state, `console_err=0x00000000` | cold start only | `COCOTB-D` | UNIMPLEMENTED |
-| RST-12 | S-CSR-9 | A reset asserted while any `console_err` bit is set leaves that bit set after reset completes | each of the 3 bits, each reset source | `COCOTB-D` | UNIMPLEMENTED |
+| RST-11a | S-RST-8 | On a **cold** power-on with no prior state, `console_err=0x00000000` | cold start only | `COCOTB-D` | PASS |
+| RST-12 | S-CSR-9 | A reset asserted while any `console_err` bit is set leaves that bit set after reset completes | each of the 3 bits, each reset source | `COCOTB-D` | PASS |
 | RST-13 | S-RST-5 | Reset asserted during any single step R2–R9 returns the design to R1 and completes the full sequence, ending at `S-RST-7`'s condition | reset injected at each of the 8 steps | `COCOTB-D` × 8 | UNIMPLEMENTED |
 
 ### 2.3 Clock-domain crossings (`CDC`)
 
 | ID | Spec cite | Assertion | Conditions | Check | Status |
 |---|---|---|---|---|---|
-| CDC-1 | S-CDC-1 | The design contains exactly three signals crossing between `cd_sys` and `cd_b8008`, and they are X1, X2, X3 | elaborated netlist | `PYTEST` structural scan | UNIMPLEMENTED |
-| CDC-2 | S-CDC-1 X3 | X3 passes through ≥2 flip-flops clocked by `cd_b8008` before any fan-out | netlist | `PYTEST` structural scan | UNIMPLEMENTED |
+| CDC-1 | S-CDC-1 | The design contains exactly three signals crossing between `cd_sys` and `cd_b8008`, and they are X1, X2, X3 | elaborated netlist | `PYTEST` structural scan | PASS |
+| CDC-2 | S-CDC-1 X3 | X3 passes through ≥2 flip-flops clocked by `cd_b8008` before any fan-out | netlist | `PYTEST` structural scan | PASS |
 | CDC-3 | S-CDC-3, S-CLK-2 | X3 is a level: it holds its value for ≥2 `cd_b8008` periods on every transition | 1000 randomized transition phases | `COCOTB-R` | UNIMPLEMENTED |
 | CDC-4 | S-CDC-3, S-BP-3 | The stall reaches the core's `run_enable` within 3 `cd_b8008` periods of the `cd_sys`-side assertion | swept over all 3 sys/b8008 phase alignments | `COCOTB-D` | UNIMPLEMENTED |
-| CDC-5 | S-CDC-4 | The design contains zero `PulseSynchronizer` instances | elaborated netlist | `PYTEST` | UNIMPLEMENTED |
+| CDC-5 | S-CDC-4 | The design contains zero `PulseSynchronizer` instances | elaborated netlist | `PYTEST` | PASS |
 | CDC-6 | S-CDC-2 | With a randomized metastability model injected on X3's first flop, `run_enable` never glitches for <1 `cd_b8008` period | 10,000 injected events | `COCOTB-R` | UNIMPLEMENTED |
 
 ### 2.4 RX path (`RX`)
 
 | ID | Spec cite | Assertion | Conditions | Check | Status |
 |---|---|---|---|---|---|
-| RX-1 | S-RX-1 | `rx_fifo` depth is exactly 4096 | elaboration | `PYTEST` | UNIMPLEMENTED |
-| RX-2 | S-RX-3 | Two consecutive reads of `console_rx` with no intervening pop return bit-identical 32-bit values | at levels 1, 2, 2048, 4095, 4096 | `COCOTB-D` × 5 | UNIMPLEMENTED |
-| RX-3 | S-RX-3 | 1000 consecutive reads of `console_rx` with no pop leave `level` unchanged | level = 1 | `COCOTB-D` | UNIMPLEMENTED |
-| RX-4 | S-RX-4 | One write to `console_rx_pop` decreases `level` by exactly 1 | at levels 1, 2, 4096 | `COCOTB-D` × 3 | UNIMPLEMENTED |
-| RX-5 | S-RX-4 | *n* pops from a FIFO preloaded with a known *n*-byte sequence yield that sequence, in order, with no gap or repeat | *n* ∈ {1, 2, 255, 4096} | `COCOTB-D` × 4 | UNIMPLEMENTED |
-| RX-6 | S-RX-7 | `console_rx` returns `0x00000000` while reset is asserted | reset held | `COCOTB-D` | UNIMPLEMENTED |
-| RX-7 | S-RX-7 | `console_rx.data=0x00` and `valid=0` when `level=0` | FIFO drained | `COCOTB-D` | UNIMPLEMENTED |
+| RX-1 | S-RX-1 | `rx_fifo` depth is exactly 4096 | elaboration | `PYTEST` | PASS |
+| RX-2 | S-RX-3 | Two consecutive reads of `console_rx` with no intervening pop return bit-identical 32-bit values | at levels 1, 2, 2048, 4095, 4096 | `COCOTB-D` × 5 | PASS |
+| RX-3 | S-RX-3 | 1000 consecutive reads of `console_rx` with no pop leave `level` unchanged | level = 1 | `COCOTB-D` | PASS |
+| RX-4 | S-RX-4 | One write to `console_rx_pop` decreases `level` by exactly 1 | at levels 1, 2, 4096 | `COCOTB-D` × 3 | PASS |
+| RX-5 | S-RX-4 | *n* pops from a FIFO preloaded with a known *n*-byte sequence yield that sequence, in order, with no gap or repeat | *n* ∈ {1, 2, 255, 4096} | `COCOTB-D` × 4 | PASS |
+| RX-6 | S-RX-7 | `console_rx` returns `0x00000000` while reset is asserted | reset held | `COCOTB-D` | PASS |
+| RX-7 | S-RX-7 | `console_rx.data=0x00` and `valid=0` when `level=0` | FIFO drained | `COCOTB-D` | PASS |
 | RX-8 | S-RX-8 | `console_rx.valid == (console_rx.level != 0)` on every read | unbounded | `SBY` (invariant) | UNIMPLEMENTED |
 | RX-9 | S-RX-8 | The byte returned in `console_rx.data` is the byte the next `console_rx_pop` consumes | unbounded | `SBY` (invariant) | UNIMPLEMENTED |
 | RX-10 | S-RX-8 | A read of `console_rx` concurrent with a FIFO push returns a `{data, valid, level}` triple consistent with a single point in time — never a level from after the push with data from before | push aligned to the read on every `cd_sys` phase | `SBY` (atomicity) | UNIMPLEMENTED |
-| RX-11 | S-RX-9, S-CSR-5 | A pop at `level=0` leaves `level=0` and sets `console_err[2]` | FIFO empty | `COCOTB-D` | UNIMPLEMENTED |
-| RX-12 | S-RX-9 | A pop at `level=0` does not corrupt the next byte to arrive: the byte pushed after the illegal pop is the byte the next legal pop returns | empty, illegal pop, push, pop | `COCOTB-D` | UNIMPLEMENTED |
+| RX-11 | S-RX-9, S-CSR-5 | A pop at `level=0` leaves `level=0` and sets `console_err[2]` | FIFO empty | `COCOTB-D` | PASS |
+| RX-12 | S-RX-9 | A pop at `level=0` does not corrupt the next byte to arrive: the byte pushed after the illegal pop is the byte the next legal pop returns | empty, illegal pop, push, pop | `COCOTB-D` | PASS |
 | RX-13 | S-PROD-3 | Over a 100,000-byte pseudorandom stream, the sequence popped equals the sequence emitted from the core's `uart_tx` pin, byte for byte | randomized host drain latency 0–10 ms | `COCOTB-R` | UNIMPLEMENTED |
-| RX-14 | S-RX-5 | A read of `console_rx` repeated *k* times (simulating transport retry) followed by one pop advances the stream by exactly one byte, for *k* ∈ 1..10 | at levels 1 and 4096 | `COCOTB-D` | UNIMPLEMENTED |
+| RX-14 | S-RX-5 | A read of `console_rx` repeated *k* times (simulating transport retry) followed by one pop advances the stream by exactly one byte, for *k* ∈ 1..10 | at levels 1 and 4096 | `COCOTB-D` | PASS |
 
 ### 2.5 TX path (`TX`)
 
 | ID | Spec cite | Assertion | Conditions | Check | Status |
 |---|---|---|---|---|---|
-| TX-1 | S-TX-1 | `tx_fifo` depth is exactly 256 | elaboration | `PYTEST` | UNIMPLEMENTED |
-| TX-2 | S-TX-2 | A write while `full=0` increases `level` by exactly 1 | at levels 0, 1, 255 | `COCOTB-D` × 3 | UNIMPLEMENTED |
+| TX-1 | S-TX-1 | `tx_fifo` depth is exactly 256 | elaboration | `PYTEST` | PASS |
+| TX-2 | S-TX-2 | A write while `full=0` increases `level` by exactly 1 | at levels 0, 1, 255 | `COCOTB-D` × 3 | PASS |
 | TX-3 | S-TX-2 | A 256-byte known sequence written while never full is received at the core's `uart_rx` pin in that order, byte for byte | FIFO drained at line rate | `COCOTB-D` | UNIMPLEMENTED |
-| TX-4 | S-TX-3, S-CSR-8 | A write while `full=1` leaves `level=256` and leaves every byte already in the FIFO unchanged | FIFO full | `COCOTB-D` | UNIMPLEMENTED |
-| TX-5 | S-TX-3, S-TX-4 | A write while `full=1` sets `console_err[1]` | FIFO full | `COCOTB-D` | UNIMPLEMENTED |
-| TX-6 | S-TX-3 | The byte rejected in TX-4 never appears at the core's `uart_rx` pin | FIFO full, then drained | `COCOTB-D` | UNIMPLEMENTED |
+| TX-4 | S-TX-3, S-CSR-8 | A write while `full=1` leaves `level=256` and leaves every byte already in the FIFO unchanged | FIFO full | `COCOTB-D` | PASS |
+| TX-5 | S-TX-3, S-TX-4 | A write while `full=1` sets `console_err[1]` | FIFO full | `COCOTB-D` | PASS |
+| TX-6 | S-TX-3 | The byte rejected in TX-4 never appears at the core's `uart_rx` pin | FIFO full, then drained | `COCOTB-D` | PASS |
 | TX-7 | S-TX-5 | `console_tx.full == (console_tx.level == 256)` on every read | unbounded | `SBY` (invariant) | UNIMPLEMENTED |
 | TX-8 | S-TX-5 | `console_tx` returns `0x00000000` while reset is asserted | reset held | `COCOTB-D` | UNIMPLEMENTED |
 | TX-9 | S-TX-6 | The wishbone `ack` for a `console_tx_data` write asserts within 2 `cd_sys` cycles regardless of `tx_fifo` state | at levels 0, 255, 256 | `SBY` (bounded liveness) | UNIMPLEMENTED |
@@ -153,8 +156,8 @@ re-run. No re-derivation from first principles, and no re-testing here.
 
 | ID | Spec cite | Assertion | Conditions | Check | Status |
 |---|---|---|---|---|---|
-| BP-1 | S-BP-5 | Stall asserts on the `cd_sys` cycle after `rx_fifo.level` first reaches 4032 | level driven 4031→4032 | `COCOTB-D` | UNIMPLEMENTED |
-| BP-2 | S-BP-5 | Stall deasserts on the `cd_sys` cycle after `level` first reaches 3968, and not before | level driven 4032→3969→3968 | `COCOTB-D` | UNIMPLEMENTED |
+| BP-1 | S-BP-5 | Stall asserts on the `cd_sys` cycle after `rx_fifo.level` first reaches 4032 | level driven 4031→4032 | `COCOTB-D` | PASS |
+| BP-2 | S-BP-5 | Stall deasserts on the `cd_sys` cycle after `level` first reaches 3968, and not before | level driven 4032→3969→3968 | `COCOTB-D` | PASS |
 | BP-3 | S-BP-5 | Stall does not change state while 3968 < `level` < 4032 | level swept across the band in both directions | `SBY` (hysteresis invariant) | UNIMPLEMENTED |
 | BP-4 | S-BP-8 | `rx_fifo` write-while-full **never** occurs | unbounded, all reachable states | `SBY` (unbounded safety — the headline property) | UNIMPLEMENTED |
 | BP-5 | S-BP-9 | `console_err[0]` is `0` in every reachable state | unbounded | `SBY` (corollary of BP-4) | UNIMPLEMENTED |
@@ -174,15 +177,15 @@ re-run. No re-derivation from first principles, and no re-testing here.
 | CSR-2 | S-CSR-1 | Writing `0xFFFFFFFF` to reserved bits changes no observable state | all writable registers | `COCOTB-D` | UNIMPLEMENTED |
 | CSR-3 | S-CSR-2 | Every register returns a value within 2 `cd_sys` cycles in every state including reset | all 6, reset asserted and deasserted | `SBY` (bounded liveness) | UNIMPLEMENTED |
 | CSR-4 | S-CSR-3 | Reading any register leaves `rx_fifo.level`, `tx_fifo.level`, and `console_err` unchanged | 10,000 random reads at random FIFO levels | `COCOTB-R` | UNIMPLEMENTED |
-| CSR-5 | S-CSR-4 | A `console_rx_pop` write of `0x00000000` pops exactly one byte, identically to a write of `0xFFFFFFFF` | level ≥ 2 | `COCOTB-D` | UNIMPLEMENTED |
+| CSR-5 | S-CSR-4 | A `console_rx_pop` write of `0x00000000` pops exactly one byte, identically to a write of `0xFFFFFFFF` | level ≥ 2 | `COCOTB-D` | PASS |
 | CSR-6 | S-CSR-6 | A pop landing on the same `cd_sys` cycle as a FIFO push yields `level` unchanged and the correct next byte | push/pop aligned on the same cycle | `SBY` | UNIMPLEMENTED |
-| CSR-7 | S-CSR-7 | Bits 31:8 of a `console_tx_data` write do not reach `tx_fifo` | write `0xFFFFFF41`, expect `0x41` at the pin | `COCOTB-D` | UNIMPLEMENTED |
-| CSR-8 | S-CSR-9 | A read of `console_err` leaves all its bits unchanged | each bit set, then read 100× | `COCOTB-D` | UNIMPLEMENTED |
-| CSR-9 | S-CSR-11 | Writing `1` to a `console_err_clear` bit clears exactly that `console_err` bit and no other | all 3 bits, all 8 combinations | `COCOTB-D` × 8 | UNIMPLEMENTED |
-| CSR-10 | S-CSR-10 | Writing `0` to a `console_err_clear` bit leaves the corresponding bit unchanged | bit set, write `0` | `COCOTB-D` | UNIMPLEMENTED |
+| CSR-7 | S-CSR-7 | Bits 31:8 of a `console_tx_data` write do not reach `tx_fifo` | write `0xFFFFFF41`, expect `0x41` at the pin | `COCOTB-D` | PASS |
+| CSR-8 | S-CSR-9 | A read of `console_err` leaves all its bits unchanged | each bit set, then read 100× | `COCOTB-D` | PASS |
+| CSR-9 | S-CSR-11 | Writing `1` to a `console_err_clear` bit clears exactly that `console_err` bit and no other | all 3 bits, all 8 combinations | `COCOTB-D` × 8 | PASS |
+| CSR-10 | S-CSR-10 | Writing `0` to a `console_err_clear` bit leaves the corresponding bit unchanged | bit set, write `0` | `COCOTB-D` | PASS |
 | CSR-11 | S-CSR-12 | A clear coinciding on the same `cd_sys` cycle with the set condition leaves the bit **set** | all 3 bits, exact-cycle alignment | `SBY` (set-wins arbitration) | UNIMPLEMENTED |
 | CSR-12 | S-CSR-2 | Back-to-back accesses on consecutive `cd_sys` cycles to any ordered pair of registers each produce the value they would in isolation | all 36 ordered pairs | `COCOTB-R` | UNIMPLEMENTED |
-| CSR-13 | S-CSR-1b | The `console` bank in the generated `csr.csv` contains exactly the six named registers and no others | generated `csr.csv` | `PYTEST` | UNIMPLEMENTED |
+| CSR-13 | S-CSR-1b | The `console` bank in the generated `csr.csv` contains exactly the six named registers and no others | generated `csr.csv` | `PYTEST` | PASS |
 | CSR-14 | S-CSR-1a | No test or host source file contains a literal CSR address; every address is read from `csr.csv` | source scan of `host/` and the test suite | `PYTEST` | UNIMPLEMENTED |
 
 ### 2.8 Wire contract (`WIRE`)
@@ -235,9 +238,9 @@ branch would pass the boot sim and reach silicon.
 
 | ID | Spec cite | Assertion | Conditions | Check | Status |
 |---|---|---|---|---|---|
-| STR-1 | S-PROD-8, D-8 | No CSR named `ctl` exists; no register exposes `run_stop`, `step_cycle`, `step_sync`, `int_req`, or `int_vector` | generated `csr.csv` | `PYTEST` | UNIMPLEMENTED |
-| STR-2 | D-9, S-CORE-11 | No register exposes a `triggered` field | `csr.csv` | `PYTEST` | UNIMPLEMENTED |
-| STR-3 | S-PROD-8, D-10 | No wishbone memory region maps the 8008's RAM into the host address space | generated `csr.csv` / region map | `PYTEST` | UNIMPLEMENTED |
+| STR-1 | S-PROD-8, D-8 | No CSR named `ctl` exists; no register exposes `run_stop`, `step_cycle`, `step_sync`, `int_req`, or `int_vector` | generated `csr.csv` | `PYTEST` | PASS |
+| STR-2 | D-9, S-CORE-11 | No register exposes a `triggered` field | `csr.csv` | `PYTEST` | PASS |
+| STR-3 | S-PROD-8, D-10 | No wishbone memory region maps the 8008's RAM into the host address space | generated `csr.csv` / region map | `PYTEST` | PASS |
 | STR-4 | S-PIN-1, S-PIN-2 | All 15 debug signals are constrained to the X3 sites named in `_b8008_dbg_io` | generated `.lpf` | `PYTEST` | UNIMPLEMENTED |
 | STR-5 | S-PIN-3, S-PROD-9 | With every X3 pin left unconnected, all `RX`, `TX`, `BP`, and `CSR` rows still pass | full regression, pins floating | `COCOTB-D` re-run | UNIMPLEMENTED |
 | STR-6 | S-ARCH-1, S-ARCH-2 | No multi-bit bus crosses between `cd_sys` and `cd_b8008` | elaborated netlist | `PYTEST` structural scan | UNIMPLEMENTED |
@@ -559,4 +562,4 @@ Counts below are produced by the script in §4, not typed in.
 | Cross-product cells pruned before the per-row stage | 360 of 525 |
 | Deliberate UNSPECIFIED items | 8 |
 | Divergences from current RTL | 12 |
-| Rows currently `PASS` | **0** |
+| Rows currently `PASS` | **32** |
