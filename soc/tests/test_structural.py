@@ -104,3 +104,188 @@ def test_all_core_input_ports_are_connected(core_verilog):
 
     missing = declared_inputs - connected
     assert not missing, f"declared input ports left unconnected by Instance(): {missing}"
+
+
+# ── Task 8: reset synchronization and ordering (S-RST-4, S-RST-6) ──────────
+#
+# These tests elaborate the real `_CRG` from versa_soc.py (not a stand-in),
+# so they exercise the same code path `make build` does. Importing
+# versa_soc.py pulls in `litex.soc.integration.builder`, which needs a real
+# `litex` package (not the vendored repo-root clone directory shadowing it
+# as a namespace package) already resolved -- see conftest.py's `_ROOT`
+# strip, which this relies on and which must run before this module's first
+# `import litex` anywhere in the session, not just before `_crg()`.
+def _crg():
+    """Elaborate the real Versa-ECP5 `_CRG`, for inspecting its reset wiring."""
+    import os
+    import sys
+
+    soc_dir = os.path.join(os.path.dirname(__file__), "..")
+    if soc_dir not in sys.path:
+        sys.path.insert(0, soc_dir)
+    from versa_soc import _CRG
+    from litex_boards.platforms import lattice_versa_ecp5
+
+    platform = lattice_versa_ecp5.Platform(device="LFE5UM5G", toolchain="trellis")
+    return _CRG(platform, 75e6)
+
+
+def _comb_driver(fragment, target_signal):
+    """The RHS expression of the `fragment.comb` assignment whose target is
+    `target_signal`, or None. `Module.specials`/`.comb` are proxy objects
+    (migen.fhdl.module._ModuleSpecials/_ModuleComb) re-created on every
+    attribute access and not themselves iterable -- the real, iterable
+    storage a finalized module's contents end up in is `fragment.specials`
+    (a set) and `fragment.comb` (a list), reached via `Module.get_fragment()`.
+    """
+    from migen.fhdl.structure import _Assign
+
+    for stmt in fragment.comb:
+        if isinstance(stmt, _Assign) and stmt.l is target_signal:
+            return stmt.r
+    return None
+
+
+class _ResetSignalFinder:
+    """Collects the clock-domain names of every `ResetSignal(...)` reachable
+    inside a Migen expression tree.
+
+    `migen.fhdl.tools.list_signals` only collects plain `Signal` nodes;
+    `ResetSignal` is a distinct `_Value` subclass (it isn't resolved to a
+    concrete per-domain Signal until a later clock-domain-lowering pass), so
+    it is invisible to `list_signals` and needs its own tiny walk.
+    """
+
+    def __init__(self):
+        self.domains = set()
+
+    def visit(self, node):
+        from migen.fhdl.structure import ResetSignal, _Operator, _Slice, _Part, Cat, Replicate
+
+        if isinstance(node, ResetSignal):
+            self.domains.add(node.cd)
+        elif isinstance(node, _Operator):
+            for o in node.operands:
+                self.visit(o)
+        elif isinstance(node, Cat):
+            for o in node.l:
+                self.visit(o)
+        elif isinstance(node, _Slice):
+            self.visit(node.value)
+        elif isinstance(node, _Part):
+            self.visit(node.value)
+            self.visit(node.offset)
+        elif isinstance(node, Replicate):
+            self.visit(node.v)
+
+
+def test_b8008_reset_is_synchronized():
+    """cd_b8008 has exactly one AsyncResetSynchronizer, and it is genuinely
+    gated on the same base condition as cd_sys's (~pll.locked | reset) --
+    not merely present under some attribute name.
+
+    A bare "does *a* synchronizer exist for cd_b8008" check would have
+    passed on unmodified versa_soc.py for the wrong reason:
+    `ECP5PLL.create_clkout(self.cd_b8008, 25e6)` attaches its *own*
+    `AsyncResetSynchronizer(cd_b8008, ~pll.locked)` by default
+    (litex/soc/cores/clock/common.py's connect_clkout(), with_reset=True),
+    confirmed by converting the pre-fix CRG to Verilog: b8008_rst was
+    already driven, just by a synchronizer missing the self.reset (POR/
+    rst_n) term cd_sys's equivalent has, and with no ordering gate at all --
+    SPEC.md S-RST-3's "cd_b8008 currently has no AsyncResetSynchronizer" is
+    imprecise about *that*. The actual, spec-relevant defects were the
+    missing self.reset term and the missing S-RST-6 ordering gate.
+    Layering an explicit, correctly-gated synchronizer on *top of* that
+    default (rather than replacing it) elaborates and converts to Verilog
+    without complaint, but produces two separate FD1S3BX flip-flop pairs
+    both driving the same b8008_rst net -- a multi-driver hazard invisible
+    until synthesis. versa_soc.py disables the default (with_reset=False)
+    so the explicit synchronizer is cd_b8008's sole driver; the count check
+    below guards against that regressing.
+
+    VPLAN: RST-2
+    """
+    from migen.fhdl.tools import list_signals
+    from migen.genlib.resetsync import AsyncResetSynchronizer
+
+    crg = _crg()
+    fragment = crg.get_fragment()
+
+    b8008_syncs = [
+        s for s in fragment.specials
+        if isinstance(s, AsyncResetSynchronizer) and s.cd is crg.cd_b8008
+    ]
+    assert len(b8008_syncs) == 1, (
+        f"expected exactly one AsyncResetSynchronizer driving cd_b8008.rst, "
+        f"found {len(b8008_syncs)} -- more than one is a multi-driver hazard "
+        f"on the same net, not mere redundancy"
+    )
+
+    gate = _comb_driver(fragment, b8008_syncs[0].async_reset)
+    assert gate is not None, (
+        "cd_b8008's synchronizer input is not driven by any comb assignment "
+        "this suite can find -- it may be wired to a constant"
+    )
+    fanin = list_signals(gate)
+    assert crg.pll.locked in fanin, "cd_b8008 sync not gated on pll.locked"
+    assert crg.reset in fanin, "cd_b8008 sync not gated on self.reset (POR/rst_n)"
+
+
+def test_console_reset_precedes_core_reset():
+    """cd_b8008's reset-release gate genuinely has ResetSignal("sys") in its
+    fan-in -- not merely an attribute that exists (SPEC.md S-RST-6: the
+    console must be able to accept a byte before the core can emit one, or
+    the boot banner is lost).
+
+    What this test does NOT establish: that the release is separated by
+    >=1 cd_sys period (VPLAN RST-7's full statement), only that it cannot
+    happen *before* cd_sys releases. Proving the >=1-cycle gap needs a
+    cycle-accurate simulation of the real _CRG, and that is not reachable
+    from Migen's simulator for two independent reasons, both confirmed
+    directly rather than assumed:
+      1. ECP5PLL's `locked` output comes from `Instance("EHXPLLL", ...)`, an
+         opaque vendor primitive. Migen's simulator has no behavioral model
+         for arbitrary Instance()s (migen/sim/core.py's own comment: "TODO:
+         instances via Iverilog/VPI") -- lower_specials() would raise
+         "Could not lower all specials" before simulation could start.
+      2. Even given a stand-in for the PLL, Migen's Simulator's *default*
+         override for AsyncResetSynchronizer -- DummyAsyncResetSynchronizer,
+         migen/sim/core.py -- lowers it to a single combinational
+         `cd.rst.eq(async_reset)`, not the real 2-FF synchronous-release
+         chain (that only exists in the ECP5-specific lowering, e.g.
+         FD1S3BX pairs, which is a synthesis-time transform, not something
+         the plain simulator exercises). Under that default, cd_sys.rst and
+         cd_b8008.rst would release in the same delta-cycle whenever the
+         gate clears -- a simulation "pass" here would demonstrate ordering
+         that is not what the real 2-FF-synchronized hardware actually does,
+         which is worse than not simulating at all.
+      3. This is also why VPLAN.md declares RST-7's method as `SBY` (an
+         unbounded formal property), not `PYTEST` or a `COCOTB` testbench --
+         the row was never expected to be discharged by a Python-level
+         elaboration check. This test is static corroboration that the
+         *structural* prerequisite for that property (ResetSignal("sys") is
+         actually in the gate's fan-in) holds; it is not the property itself.
+
+    VPLAN: RST-7
+    """
+    from migen.genlib.resetsync import AsyncResetSynchronizer
+
+    crg = _crg()
+    fragment = crg.get_fragment()
+
+    b8008_syncs = [
+        s for s in fragment.specials
+        if isinstance(s, AsyncResetSynchronizer) and s.cd is crg.cd_b8008
+    ]
+    assert b8008_syncs, "no AsyncResetSynchronizer found for cd_b8008"
+
+    gate = _comb_driver(fragment, b8008_syncs[0].async_reset)
+    assert gate is not None, "cd_b8008's synchronizer input is not comb-driven"
+
+    finder = _ResetSignalFinder()
+    finder.visit(gate)
+    assert "sys" in finder.domains, (
+        f"ResetSignal(\"sys\") not found in cd_b8008's reset-gate fan-in "
+        f"(found domains: {finder.domains}); cd_b8008 can release before "
+        f"cd_sys does, which SPEC.md S-RST-6 forbids"
+    )

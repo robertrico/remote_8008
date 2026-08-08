@@ -415,7 +415,22 @@ class _CRG(LiteXModule):
         self.comb += pll.reset.eq(~por_done | ~rst_n | self.rst)
         pll.register_clkin(clk100, 100e6)
         pll.create_clkout(self.cd_sys2x_i, 2*sys_clk_freq)
-        pll.create_clkout(self.cd_b8008, 25e6)
+        # with_reset=False: ECP5PLL.create_clkout()'s default (with_reset=True)
+        # silently attaches its own AsyncResetSynchronizer(cd_b8008, ~pll.locked)
+        # via connect_clkout() (litex/soc/cores/clock/common.py). Left enabled,
+        # that combines with the explicit, correctly-gated synchronizer added
+        # below into TWO separate FD1S3BX flip-flop pairs both driving
+        # cd_b8008.rst -- a two-driver net that elaborates and converts to
+        # Verilog without complaint (confirmed: platform.get_verilog() on the
+        # unpatched code emits exactly this, FD1S3BX_2/_3 driving b8008_rst
+        # from bare ~pll.locked, missing the self.reset/POR term cd_sys's own
+        # synchronizer includes and the ResetSignal("sys") ordering term
+        # S-RST-6 requires) but is a genuine multi-driver hazard once it
+        # reaches yosys/nextpnr. Suppressing the PLL's auto-inserted one here
+        # leaves the explicit synchronizer below as cd_b8008's sole driver,
+        # the same shape cd_sys already has (derived via CLKDIVF, not
+        # create_clkout, so it never had this problem).
+        pll.create_clkout(self.cd_b8008, 25e6, with_reset=False)
         self.specials += [
             Instance("ECLKSYNCB",
                 i_ECLKI = self.cd_sys2x_i.clk,
@@ -429,6 +444,21 @@ class _CRG(LiteXModule):
                 o_CDIVX   = self.cd_sys.clk),
             AsyncResetSynchronizer(self.cd_sys, ~pll.locked | self.reset),
         ]
+
+        # SPEC.md S-RST-4 / S-RST-6. cd_b8008 previously had NO reset
+        # synchronizer at all, so ResetSignal("b8008") was never driven and the
+        # core was reset only by its own internal POR counter.
+        #
+        # The gate is what orders R6 before R7: cd_b8008 is held in reset until
+        # cd_sys is out of reset, so the console path can accept a byte before
+        # the core can emit one. Without it the boot banner -- the product's
+        # only power-on liveness evidence -- can be emitted into a FIFO that is
+        # still in reset, and lost.
+        self.b8008_rst_gate = Signal()
+        self.comb += self.b8008_rst_gate.eq(
+            ~pll.locked | self.reset | ResetSignal("sys"))
+        self.specials += AsyncResetSynchronizer(
+            self.cd_b8008, self.b8008_rst_gate)
 
 
 # ── BaseSoC ─────────────────────────────────────────────────────────────────
