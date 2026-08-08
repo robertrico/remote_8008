@@ -46,15 +46,31 @@ class ConsoleBridge(LiteXModule, AutoCSR):
             CSRField("data",  size=8),
             CSRField("valid", size=1),
             CSRField("level", size=13)])
+        # SyncFIFOBuffered (migen/genlib/fifo.py) has a one-cycle window on the
+        # empty->non-empty edge where its `level` (= inner fifo.level +
+        # outer readable) already counts the incoming word combinationally,
+        # but `source.valid` (the outer `readable` register) only catches up
+        # on the next clock: `fifo.re` fires the same cycle the inner FIFO
+        # becomes readable, while `self.readable.eq(1)` is a `sync` update
+        # gated on that same `fifo.re`. So for that one cycle,
+        # rx_fifo.level == 1 while rx_fifo.source.valid == 0 -- reporting a
+        # byte the host cannot yet actually pop. Exporting raw
+        # rx_fifo.level here would let `console_rx.level != 0` disagree with
+        # `console_rx.valid` on that cycle, breaking S-RX-8's atomicity
+        # requirement (RX-8/RX-10). Gate the exported level on `valid` so
+        # they can never disagree; `rx_fifo.level` itself (what Task 6's
+        # backpressure logic reads directly, not through this CSR) is
+        # unchanged.
         self.comb += [
             # data reads 0x00 when empty -- S-RX-7's table, not "don't care".
             If(self.rx_fifo.source.valid,
-                self.console_rx.fields.data.eq(self.rx_fifo.source.data)
+                self.console_rx.fields.data.eq(self.rx_fifo.source.data),
+                self.console_rx.fields.level.eq(self.rx_fifo.level),
             ).Else(
-                self.console_rx.fields.data.eq(0)
+                self.console_rx.fields.data.eq(0),
+                self.console_rx.fields.level.eq(0),
             ),
             self.console_rx.fields.valid.eq(self.rx_fifo.source.valid),
-            self.console_rx.fields.level.eq(self.rx_fifo.level),
         ]
 
         # ---- console_rx_pop: the ONLY consuming action (SPEC.md S-RX-4) ------

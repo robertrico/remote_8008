@@ -239,3 +239,60 @@ def test_pop_when_empty_pulses_error():
 
     run_simulation(dut, [gen(), monitor()])
     assert fired, "err_rx_pop_when_empty never asserted"
+
+
+def test_read_during_live_push_stays_consistent():
+    """console_rx sampled every single cycle during live serial arrivals
+    never disagrees on valid vs level, and every popped byte matches what
+    the read immediately before it reported.
+
+    Regression for a transient in SyncFIFOBuffered (migen/genlib/fifo.py):
+    on the empty->non-empty edge, `fifo.re` fires combinationally the same
+    cycle the inner FIFO becomes readable, but the outer `readable` register
+    (== rx_fifo.source.valid) only catches up on the *next* clock edge. For
+    that one cycle, rx_fifo.level reads 1 while rx_fifo.source.valid reads
+    0 -- console_rx.level != 0 while console_rx.valid == 0, which violates
+    S-RX-8. A fill-then-drain access pattern (as in test_valid_tracks_level)
+    never lands on that cycle, which is exactly why it didn't catch this.
+    This test samples every cycle while a byte is still arriving, and pops
+    opportunistically mid-stream, so it must cross that transient directly.
+
+    Uses FAST (clk/baud = 10), not the 75 MHz/115200 default: the realistic
+    ratio is ~65x slower in sim for no added fidelity to this property.
+
+    VPLAN: RX-8, RX-9, RX-10
+    """
+    dut = ConsoleBridge(**FAST)
+    dut.console_rx.finalize(32, "big")
+    dut.submodules += dut.console_rx
+    bad = []
+    popped = []
+
+    def driver():
+        yield dut.pads.rx.eq(1)
+        for _ in range(BIT):
+            yield
+        for b in (0x11, 0x22, 0x33, 0x44):
+            yield from serial_send(dut, b)
+            for _ in range(2 * BIT):     # idle gap between bytes
+                yield
+
+    def monitor():
+        last_data = None
+        for cyc in range(700):
+            data, valid, level = yield from _read_rx(dut)
+            if valid != (1 if level else 0):
+                bad.append((cyc, data, valid, level))
+            if valid:
+                last_data = data
+            # Pop opportunistically while data is available, landing pops
+            # both mid-arrival and in the gaps between bytes.
+            pop_now = bool(valid) and (cyc % 7 == 3)
+            yield dut.console_rx_pop.re.eq(1 if pop_now else 0)
+            if pop_now:
+                popped.append(last_data)
+            yield                         # exactly one sys cycle/iteration
+
+    run_simulation(dut, [driver(), monitor()])
+    assert not bad, f"valid/level disagreed while a byte was arriving: {bad}"
+    assert popped == [0x11, 0x22, 0x33, 0x44], popped
