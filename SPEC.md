@@ -269,11 +269,29 @@ accepted product limitation, not an oversight (§15, U-1).
 
 ### 6.2 Known defect in the current RTL
 
-`S-RST-3` `cd_b8008` currently has **no `AsyncResetSynchronizer`**; only `cd_sys`
-does (`versa_soc.py:430`). `ResetSignal("b8008")` is therefore never driven, and
-`b8008_integration.py:145` feeds that undriven signal to the core's `i_rst`. The
-core is today reset **only** by its own internal POR counter inside
-`src/b8008_net_core.vhdl`.
+`S-RST-3` `cd_b8008` **does** have an `AsyncResetSynchronizer`, but it is gated on
+the wrong condition. `ECP5PLL.create_clkout()` defaults `with_reset=True`
+(`litex/soc/cores/clock/lattice_ecp5.py:48`), and `connect_clkout()`
+(`litex/soc/cores/clock/common.py:129-131`) therefore auto-attaches
+`AsyncResetSynchronizer(cd_b8008, ~pll.locked)`. `ResetSignal("b8008")` is driven.
+
+The defect is the gate, not the absence. `~pll.locked` omits `cd_sys`'s `self.reset`
+term (POR and `rst_n`) and carries no dependency on `cd_sys`'s reset state, so
+`cd_b8008` can release **before** `cd_sys` — violating the ordering `S-RST-6`
+requires.
+
+A correction that adds a second synchronizer without disabling the automatic one
+produces **two drivers** on `b8008_rst`: the ECP5 lowering
+(`litex/build/lattice/common.py`) instantiates a fresh `FD1S3BX` pair per
+`AsyncResetSynchronizer` special. The fix must pass `with_reset=False` to
+`create_clkout` and supply a single correctly-gated synchronizer.
+
+*(Corrected 2026-08-08. This clause previously asserted that `cd_b8008` had no
+synchronizer at all and that `i_rst` was undriven. That was wrong — it was written
+from reading `_CRG`'s explicit `specials` list without accounting for what
+`create_clkout` attaches implicitly. Recorded rather than silently edited, because
+the spec being wrong about the design is exactly the failure this document exists
+to prevent.)*
 
 `S-RST-4` This shall be corrected. `cd_b8008` shall have an `AsyncResetSynchronizer`
 driven from the same condition as `cd_sys` (`~pll.locked | reset`), so that the core's
@@ -686,7 +704,7 @@ this specification requires a change.
 
 | # | Current RTL | Required by spec |
 |---|---|---|
-| D-1 | `cd_b8008` has no `AsyncResetSynchronizer`; core `i_rst` undriven | `S-RST-4` |
+| D-1 | `cd_b8008`'s auto-attached `AsyncResetSynchronizer` is gated only on `~pll.locked`, omitting POR/`rst_n` and any ordering against `cd_sys` | `S-RST-3`, `S-RST-4` |
 | D-2 | No reset ordering between console logic and core | `S-RST-6` |
 | D-3 | `rxtx` read is a destructive pop | `S-RX-3`, `S-RX-4` |
 | D-4 | `rxlevel` and `rxtx` are separate registers, read separately | `S-RX-8` |
