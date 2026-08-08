@@ -130,10 +130,6 @@ class Board:
     def regs(self):
         return self.client.regs
 
-    @property
-    def ram_base(self):
-        return self.client.mems.b8008_ram.base
-
     def read(self, addr, n=1, burst="incr"):
         return self.client.read(addr, n, burst=burst)
 

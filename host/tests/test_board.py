@@ -26,7 +26,6 @@ class FakeRemoteClient:
         self._identifier = identifier
         self._mem = {}
         self.bases = type("Bases", (), {"identifier_mem": 0x1000})()
-        self.mems = type("Mems", (), {"b8008_ram": type("Ram", (), {"base": 0x90000000})()})()
         self.regs = object()
         self.reads = []
         self.writes = []
@@ -414,14 +413,12 @@ def test_connect_no_warning_when_identifier_matches(tmp_path, monkeypatch, capsy
         b.close()
 
 
-def test_read_write_and_ram_base_delegate_to_client(tmp_path, monkeypatch):
+def test_read_write_delegate_to_client(tmp_path, monkeypatch):
     monkeypatch.setattr(board_mod, "_port_listening", lambda host, port, timeout=0.2: True)
 
     b = Board.connect(_FIXTURE_CSR, host="192.168.7.55", client_factory=_factory(),
                        lock_path=str(tmp_path / "b8008net.lock"))
     try:
-        assert b.ram_base == 0x90000000
-
         b.read(0x90000000, n=4, burst="fixed")
         assert b.client.reads[-1] == (0x90000000, 4, "fixed")
 
