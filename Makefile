@@ -299,3 +299,7 @@ check-synth:
 	 echo "expect >= 12 DP16KD (16KB RAM=8, ROM 4KB=2..4, + SoC)"; \
 	 echo "=== Trellis packing / FF / fmax (see litex.log & *.rpt) ==="; \
 	 grep -iE "TRELLIS_FF|Max frequency|DP16KD|LUT4" $(VERSA_DIR)/gateware/*.rpt 2>/dev/null | tail -40
+
+.PHONY: vplan
+vplan:
+	$(PY) -m pytest soc/tests soc/test_integration.py -v

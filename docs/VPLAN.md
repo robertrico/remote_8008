@@ -27,11 +27,19 @@ imported assumptions are `IMPORTED` and are never run here.
 | `EQY` | Yosys equivalence check between two representations | new; the tooling is planned |
 | `COCOTB-D` | directed cocotb test | new; replaces ad-hoc GHDL TBs for wrapper logic |
 | `COCOTB-R` | constrained-random cocotb test | new |
+| `MIGENSIM` | Migen `run_simulation` unit test | `litex/test/test_uart.py`, `litex/test/test_csr_bus.py` |
 | `GHDL-TB` | GHDL VHDL testbench | `make test-*` in the core repo |
 | `VBENCH` | Verilator C++ bench driving buses directly | `sim/bench_tb.cpp`, `soc/bench_core.py` |
 | `PYTEST` | host-side Python test | `host/tests/` |
 | `SCRIPT` | program-level run + output check | `test_programs/verification_scripts/` + `checkpoint_lib.sh` |
 | `HW` | requires the physical board | `soc/host_selftest.py` |
+
+**On `MIGENSIM` vs `COCOTB-D`.** Rows whose device under test is `ConsoleBridge`
+use `MIGENSIM`: that module is pure `cd_sys` Migen, so Migen's own simulator runs
+it directly as Python in milliseconds, with no Verilog conversion and no simulator
+install. It is the idiom LiteX uses for equivalent modules. `COCOTB-*` is retained
+for rows needing the converted netlist, the `cd_b8008` domain, or a real CDC phase
+relationship — CDC-3, CDC-4, CDC-6, RST-3, RST-4, BP-7, BP-12, CLK-7, CLK-8.
 
 ---
 
