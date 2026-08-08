@@ -339,7 +339,7 @@ is non-zero and the bytes readable there begin with `"8008 "`.
 
 ## 7. Clock-domain crossing inventory
 
-`S-CDC-1` The product contains exactly **three** crossings. Any fourth is a design
+`S-CDC-1` The product contains exactly **four** crossings. Any fifth is a design
 error.
 
 | # | Signal | From | To | Mechanism | Status |
@@ -347,6 +347,16 @@ error.
 | X1 | core `uart_tx` serial line | `cd_b8008` | `cd_sys` | 2-FF `MultiReg` inside `RS232PHYRX` (`litex/soc/cores/uart.py:120`) | **already correct** |
 | X2 | PHY `tx` serial line | `cd_sys` | `cd_b8008` | 2-FF synchronizer inside `usart.vhdl:63-78` | **already correct** |
 | X3 | backpressure stall level | `cd_sys` | `cd_b8008` | 2-FF `MultiReg` | **to be built** |
+| X4 | `ResetSignal("sys")` (reset-ordering term) | `cd_sys` | `cd_b8008` | `AsyncResetSynchronizer` on `cd_b8008`, gated via `b8008_rst_gate` (`soc/versa_soc.py:463-467`) | **already correct** |
+
+*(Corrected 2026-08-08. This clause previously said "exactly three" and omitted X4. Task
+8 legitimately added a fourth crossing: `cd_b8008`'s `AsyncResetSynchronizer` is gated on
+`b8008_rst_gate`, which includes `ResetSignal("sys")` so that `cd_b8008`'s reset cannot
+release before `cd_sys`'s does (`S-RST-6`). It is correctly synchronized and introduces
+no hazard, but its omission left the inventory undercounting the design by one signal
+while `docs/VPLAN.md` row CDC-1 asserted the old three-crossing inventory and read
+`PASS`. Recorded rather than silently edited, for the same reason `S-RST-3`'s correction
+above is.)*
 
 `S-CDC-2` X1 and X2 are single-bit asynchronous serial lines. Metastability
 resolution is the synchronizer's job; framing recovery is the receiver's. Neither
@@ -506,6 +516,13 @@ headroom carries roughly 20× margin.
 `S-BP-7` If the host stops reading, the 8008 stops executing, indefinitely. This is
 correct behavior, not a fault. There is no timeout, no watchdog, and no automatic
 release. Execution resumes when, and only when, the host drains below `LWM`.
+
+While the 8008 is stalled it cannot poll its own UART receive register either, so any
+byte the host transmits during that stall is overwritten inside the core's USART
+regardless of how well the host paces its writes; this route is outside the guarantee
+boundary (`S-PROD-6`) and is not a violation, but it is caused by the product's own
+RX-side stall rather than by host pacing as `U-6` frames it, and a host CLI should stop
+transmitting whenever `console_rx.level` is backing up toward `HWM`.
 
 ### 10.5 Overflow is unreachable
 

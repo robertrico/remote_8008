@@ -129,7 +129,14 @@ def test_err_is_zero_at_reset():
 def test_pop_empty_sets_sticky_bit():
     """An illegal pop latches bit 2 and it stays set.
 
-    VPLAN: RX-11, CSR-5
+    Dropped a `CSR-5` tag this test previously carried: `CSR-5`'s
+    Conditions column is scoped to `level >= 2` ("a console_rx_pop write...
+    pops exactly one byte, identically to a write of 0xFFFFFFFF"), the
+    opposite of this test's own condition -- an illegal pop against an
+    *empty* FIFO. `CSR-5` is already legitimately discharged elsewhere
+    (`test_console_rx.py::test_pop_consumes_exactly_one`, level >= 2).
+
+    VPLAN: RX-11
     """
     dut = _new_dut()
     out = []
@@ -147,7 +154,16 @@ def test_pop_empty_sets_sticky_bit():
 def test_reading_err_does_not_clear_it():
     """100 reads of console_err leave every bit unchanged.
 
-    VPLAN: CSR-8, CSR-4
+    Dropped a `CSR-4` tag this test previously carried -- an open finding
+    from the Task 10 report, never corrected: `CSR-4`'s actual assertion
+    ("reading any register leaves rx_fifo.level, tx_fifo.level, and
+    console_err unchanged | 10,000 random reads at random FIFO levels")
+    covers all six registers and is not exercised anywhere in this suite;
+    this test only re-reads `console_err` itself, which is `CSR-8`'s claim.
+    `CSR-4` stays `UNIMPLEMENTED` in `docs/VPLAN.md` (it was never flipped
+    to `PASS` on the strength of this mistag).
+
+    VPLAN: CSR-8
     """
     dut = _new_dut()
     out = []

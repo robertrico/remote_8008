@@ -162,7 +162,15 @@ def test_pop_consumes_exactly_one():
 def test_empty_reads_zero():
     """When level is 0, data reads 0x00 and valid reads 0.
 
-    VPLAN: RX-6, RX-7
+    Dropped an `RX-6` tag this test previously carried, which VPLAN.md
+    marked `PASS`: `RX-6`'s entire claim is "console_rx returns
+    0x00000000 while *reset is asserted*," and this test never drives a
+    reset -- it only reads an idle, never-yet-filled FIFO. That is `RX-7`'s
+    claim ("data=0x00, valid=0 when level=0"), which this test genuinely
+    discharges. No other test in the suite drives a reset against
+    `console_rx`, so `RX-6` goes back to `UNIMPLEMENTED` in `docs/VPLAN.md`.
+
+    VPLAN: RX-7
     """
     dut = _new_dut()
     out = []

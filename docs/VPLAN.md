@@ -1,10 +1,15 @@
 # remote_8008 — Verification Plan
 
-**Status:** Phases 1–4 complete. 32 of 119 verification rows `PASS`; the rest are
+**Status:** Phases 1–4 complete. 31 of 119 verification rows `PASS`; the rest are
 `UNIMPLEMENTED`. The 11 imported assumptions are `IMPORTED` and are never run here.
 Task 10 ran the first real bitstream build (yosys/nextpnr-ecp5/ecppack); it
 succeeded, but D-12 (`CLK-3`/`CLK-4`) remains open — see `SPEC.md` divergence
-D-12 and the Task 10 report for the empirical finding.
+D-12 and the Task 10 report for the empirical finding. A final review pass
+(2026-08-08) corrected six mistagged `VPLAN:` rows in the test suite -- BP-5, RX-6,
+CSR-4, CSR-5, CSR-8, and BP-6 (×2) -- where a test's tag did not match what it
+actually discharged; `RX-6` had no genuine test and went back to `UNIMPLEMENTED`
+(32 → 31). See `.superpowers/sdd/2026-08-08-remote-8008-spec-conformance/
+final-fix-report.md` for the full retag audit.
 **Date:** 2026-08-08
 **Contract for:** RTL that does not yet exist.
 **Spec:** [`SPEC.md`](../SPEC.md) — every row cites a `S-<AREA>-<n>` ID.
@@ -81,7 +86,7 @@ re-run. No re-derivation from first principles, and no re-testing here.
 | CLK-1 | S-CLK-1 | Every clock domain in the built design derives from `clk100`; the set of domains is exactly {`por`,`sys2x_i`,`sys2x`,`sys`,`b8008`,`eth_rx`,`eth_tx`} | post-elaboration netlist | `PYTEST` on elaborated SoC | UNIMPLEMENTED |
 | CLK-2 | S-CLK-1 | `cd_sys` period is 13.333 ns ± 0; `cd_b8008` period is 40.000 ns ± 0 | post-PnR timing report | `PYTEST` parsing `.pnr` report | UNIMPLEMENTED |
 | CLK-3 | S-CLK-3 | The generated constraint file declares `cd_sys` and `cd_b8008` in separate clock groups | build output inspected | `PYTEST` on generated `.lpf` | UNIMPLEMENTED |
-| CLK-4 | S-CLK-3 | Zero timing paths exist between `cd_sys` and `cd_b8008` other than the three of `S-CDC-1` | post-PnR path report | `PYTEST` parsing timing report | UNIMPLEMENTED |
+| CLK-4 | S-CLK-3 | Zero timing paths exist between `cd_sys` and `cd_b8008` other than the four of `S-CDC-1` | post-PnR path report | `PYTEST` parsing timing report | UNIMPLEMENTED |
 | CLK-5 | S-CLK-5 | `RS232PHY` emits a start bit every 8.6805 µs ± 1 `cd_sys` period when streaming | continuous TX of `0x55` | `COCOTB-D` | UNIMPLEMENTED |
 | CLK-6 | S-CLK-6 | The baud divisor equals `round(75e6/115200)=651`; it is not derived from a platform attribute | elaboration | `PYTEST` on `B8008Core` params | UNIMPLEMENTED |
 | CLK-7 | S-CORE-4 (A-6) | `dbg.phi1` rising edges are 55 `cd_b8008` periods apart while the core runs | core running, no stall | `COCOTB-D` | UNIMPLEMENTED |
@@ -110,7 +115,7 @@ re-run. No re-derivation from first principles, and no re-testing here.
 
 | ID | Spec cite | Assertion | Conditions | Check | Status |
 |---|---|---|---|---|---|
-| CDC-1 | S-CDC-1 | The design contains exactly three signals crossing between `cd_sys` and `cd_b8008`, and they are X1, X2, X3 | elaborated netlist | `PYTEST` structural scan | PASS |
+| CDC-1 | S-CDC-1 | The design contains exactly four signals crossing between `cd_sys` and `cd_b8008`, and they are X1, X2, X3, X4 | elaborated netlist | `PYTEST` structural scan | PASS |
 | CDC-2 | S-CDC-1 X3 | X3 passes through ≥2 flip-flops clocked by `cd_b8008` before any fan-out | netlist | `PYTEST` structural scan | PASS |
 | CDC-3 | S-CDC-3, S-CLK-2 | X3 is a level: it holds its value for ≥2 `cd_b8008` periods on every transition | 1000 randomized transition phases | `COCOTB-R` | UNIMPLEMENTED |
 | CDC-4 | S-CDC-3, S-BP-3 | The stall reaches the core's `run_enable` within 3 `cd_b8008` periods of the `cd_sys`-side assertion | swept over all 3 sys/b8008 phase alignments | `COCOTB-D` | UNIMPLEMENTED |
@@ -126,7 +131,7 @@ re-run. No re-derivation from first principles, and no re-testing here.
 | RX-3 | S-RX-3 | 1000 consecutive reads of `console_rx` with no pop leave `level` unchanged | level = 1 | `COCOTB-D` | PASS |
 | RX-4 | S-RX-4 | One write to `console_rx_pop` decreases `level` by exactly 1 | at levels 1, 2, 4096 | `COCOTB-D` × 3 | PASS |
 | RX-5 | S-RX-4 | *n* pops from a FIFO preloaded with a known *n*-byte sequence yield that sequence, in order, with no gap or repeat | *n* ∈ {1, 2, 255, 4096} | `COCOTB-D` × 4 | PASS |
-| RX-6 | S-RX-7 | `console_rx` returns `0x00000000` while reset is asserted | reset held | `COCOTB-D` | PASS |
+| RX-6 | S-RX-7 | `console_rx` returns `0x00000000` while reset is asserted | reset held | `COCOTB-D` | UNIMPLEMENTED |
 | RX-7 | S-RX-7 | `console_rx.data=0x00` and `valid=0` when `level=0` | FIFO drained | `COCOTB-D` | PASS |
 | RX-8 | S-RX-8 | `console_rx.valid == (console_rx.level != 0)` on every read | unbounded | `SBY` (invariant) | UNIMPLEMENTED |
 | RX-9 | S-RX-8 | The byte returned in `console_rx.data` is the byte the next `console_rx_pop` consumes | unbounded | `SBY` (invariant) | UNIMPLEMENTED |
@@ -284,7 +289,7 @@ than globally, because their relevance depends on what the row touches:
 
 | Collapse | Applied to | Justification |
 |---|---|---|
-| **D → 1** (from 3) | every row not touching X1, X2, or X3 | Only three signals cross domains (`S-CDC-1`, enforced structurally by CDC-1 and STR-6). All CSR and FIFO logic is single-domain `cd_sys` and is phase-invariant by construction. D is swept only on CDC-3, CDC-4, CDC-6, RST-3, RST-4, BP-7, and BP-12. |
+| **D → 1** (from 3) | every row not touching X1, X2, or X3 | Only three of `S-CDC-1`'s four crossings carry data across the phase boundary (X1, X2, X3; enforced structurally by CDC-1 and STR-6). X4, added 2026-08-08, is the `cd_b8008` reset-ordering crossing: it is asynchronous by construction (`AsyncResetSynchronizer`), not phase-sensitive, and does not enter this axis's sweep. All CSR and FIFO logic is single-domain `cd_sys` and is phase-invariant by construction. D is swept only on CDC-3, CDC-4, CDC-6, RST-3, RST-4, BP-7, and BP-12. |
 | **B: drop `coincident`** | `console_tx`, `console_tx_data`, `console_rx_pop`, `console_err_clear` | These have no autonomous update source that can coincide with a host access. Coincidence is meaningful only where hardware writes the same state the host reads: `console_rx` (FIFO push) and `console_err` (set condition). Covered by RX-10, CSR-6, and CSR-11. |
 | **B: drop `retried`** | every write-only register | `CommUDP` retries reads, not writes (`S-RX-6`). Retry is meaningful only on `console_rx`, `console_tx`, and `console_err`, and is covered by RX-14 and WIRE-5. |
 
@@ -380,7 +385,9 @@ happens to work. Never grade the work with an answer key derived from the work.
 An attempted multi-cycle implementation grew until no one could reason about it, and
 was abandoned. b8008 replaced it with small modules that each do one job.
 *Applied:* `S-ARCH-1`/`S-ARCH-2` — the byte path crosses clock domains as a serial
-line, giving exactly three crossings (CDC-1) instead of a parallel-data mesh. The
+line, giving exactly three data-path crossings (X1-X3 of CDC-1's now-four-row
+inventory — X4, added 2026-08-08, is the `cd_b8008` reset-ordering crossing, not part
+of the byte path) instead of a parallel-data mesh. The
 scope reductions of `S-PROD-8` are the same instinct: the product got smaller on
 purpose. CDC-1 and STR-6 are the rows that keep it small.
 
@@ -562,4 +569,4 @@ Counts below are produced by the script in §4, not typed in.
 | Cross-product cells pruned before the per-row stage | 360 of 525 |
 | Deliberate UNSPECIFIED items | 8 |
 | Divergences from current RTL | 12 |
-| Rows currently `PASS` | **32** |
+| Rows currently `PASS` | **31** |

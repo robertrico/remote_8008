@@ -5,12 +5,45 @@ from conftest import CORE_V, needs_netlist  # noqa: F401
 
 
 @needs_netlist
-def test_no_pulse_synchronizers(core_verilog):
-    """No PulseSynchronizer exists; the retired ctl pulses are gone.
+def test_no_pulse_synchronizers(core_module):
+    """No PulseSynchronizer exists anywhere in the elaborated submodule
+    tree; the retired ctl pulses are gone.
+
+    The previous version of this test grepped the converted Verilog for the
+    lowercased class name `"pulsesynchronizer"`. Migen's Verilog backend
+    (`migen.fhdl.verilog`/`migen.fhdl.namer`) only prefixes a generated
+    signal name with its owning submodule's Python class name when two or
+    more instances of that class collide and need disambiguating -- a
+    single surviving `PulseSynchronizer` converts to Verilog with no
+    `"pulsesynchronizer"` substring anywhere in the output, so the string
+    check passes on exactly the case it exists to catch. Task 1's original
+    red was genuine only because there were four retired instances at once
+    (colliding, so all four got the disambiguating prefix); a regression
+    that reintroduced exactly one -- the more likely single-instance
+    regression -- would pass silently. Confirmed directly: reintroducing one
+    `PulseSynchronizer("sys", "b8008")` as a `B8008Core` submodule and
+    reconverting left `"pulsesynchronizer"` entirely absent from the
+    generated Verilog.
+
+    Walks the actual submodule tree instead, the same class of fix as
+    `test_stall_crosses_into_b8008_domain` below: a real, importable
+    `PulseSynchronizer` instance either is in that tree or it is not,
+    independent of what migen.fhdl.namer happens to call it in the
+    generated netlist.
 
     VPLAN: CDC-5
     """
-    assert "pulsesynchronizer" not in core_verilog.lower()
+    from migen.genlib.cdc import PulseSynchronizer
+
+    core_module.get_fragment()  # finalize() populates the submodule tree
+
+    def _walk(module):
+        for _name, sub in module._submodules:
+            yield sub
+            yield from _walk(sub)
+
+    found = [m for m in _walk(core_module) if isinstance(m, PulseSynchronizer)]
+    assert not found, f"PulseSynchronizer instance(s) found: {found}"
 
 
 @needs_netlist
@@ -48,12 +81,71 @@ def test_console_bank_has_exactly_six_registers(core_module):
 
 
 @needs_netlist
-def test_stall_crosses_into_b8008_domain(core_verilog):
-    """The stall reaches the core through a synchronizer, not combinationally.
+def test_stall_crosses_into_b8008_domain(core_module):
+    """The stall reaches the core through a genuine >=2-flop synchronizer
+    into cd_b8008, not combinationally.
+
+    The previous version of this test asserted `"ext_hold" in core_verilog`,
+    which only matches the `Instance()` port name `b8008_net_core` declares
+    -- true whether that port is fed by a synchronizer or a bare `comb`
+    assignment, since the port name itself never changes. Confirmed
+    vacuous: replacing `MultiReg(self.console.stall, stall_b, "b8008")`
+    (`b8008_integration.py`) with `self.comb += stall_b.eq(self.console.stall)`
+    left this test green.
+
+    This matters more than its size suggests: X3 is the *only*
+    synchronizer between the 75 MHz `cd_sys` domain and the 8008's
+    `run_enable`, and CDC-3, CDC-4, and CDC-6 -- the rows that would verify
+    its behavior once crossed -- are all still `UNIMPLEMENTED`, so that
+    crossing currently has zero other verification. A refactor that
+    silently dropped the `MultiReg` would make `run_enable` metastable
+    mid-phi and the phase FSM would see a runt hold, with nothing in this
+    suite noticing.
+
+    Walks the elaborated fragment for a genuine `MultiReg` special, the
+    same pattern `test_b8008_reset_is_synchronized` uses for
+    `AsyncResetSynchronizer`: not "does a signal named ext_hold exist" but
+    "does a real >=2-flop synchronizer special sit between console.stall
+    and the core's i_ext_hold port."
 
     VPLAN: CDC-2
     """
-    assert "ext_hold" in core_verilog
+    from migen.fhdl.specials import Instance
+    from migen.genlib.cdc import MultiReg
+
+    fragment = core_module.get_fragment()
+
+    b8008_syncs = [
+        s for s in fragment.specials
+        if isinstance(s, MultiReg) and s.odomain == "b8008"
+    ]
+    assert len(b8008_syncs) == 1, (
+        f"expected exactly one MultiReg synchronizing a signal into "
+        f"cd_b8008, found {len(b8008_syncs)}"
+    )
+    sync = b8008_syncs[0]
+    assert sync.n >= 2, (
+        f"cd_b8008's MultiReg has only {sync.n} flop(s) -- S-CDC-1 X3 "
+        f"requires a 2-FF synchronizer"
+    )
+    assert sync.i is core_module.console.stall, (
+        "the cd_b8008 MultiReg's input is not console.stall -- some other "
+        "signal is being synchronized instead of the backpressure stall"
+    )
+
+    core_inst = next(
+        s for s in fragment.specials
+        if isinstance(s, Instance) and s.of == "b8008_net_core"
+    )
+    ext_hold = core_inst.get_io("ext_hold")
+    assert ext_hold is not None, (
+        "b8008_net_core's Instance() has no ext_hold port connection at all"
+    )
+    assert ext_hold is sync.o, (
+        "b8008_net_core's ext_hold port is not driven by the MultiReg's "
+        "output -- the synchronizer exists but doesn't reach the core, "
+        "e.g. something else feeds i_ext_hold combinationally instead"
+    )
 
 
 @needs_netlist
@@ -82,10 +174,14 @@ def test_all_core_input_ports_are_connected(core_verilog):
     Declared VPLAN: CDC-1 rather than STR-6: STR-6 asserts something
     different (no *multi-bit bus* crosses the domain boundary at all).
     CDC-1's assertion -- that the crossings into b8008_net_core are exactly
-    the inventoried set (X1/X2/X3) and nothing else -- is the row this test
-    actually backs: an unconnected input is either an undocumented fourth
-    crossing (a floating net masquerading as a signal) or a broken X1/X2/X3,
-    both of which a complete connection inventory rules out.
+    the inventoried set that terminates at this Instance's own ports (X1,
+    X2, X3; X4, added to SPEC.md 2026-08-08, is the CRG-level cd_b8008
+    reset-ordering crossing in versa_soc.py and never reaches a
+    b8008_net_core port this Instance() call wires, so it is outside what
+    this test can see) and nothing else -- is the row this test actually
+    backs: an unconnected input is either an undocumented crossing into
+    this Instance (a floating net masquerading as a signal) or a broken
+    X1/X2/X3, both of which a complete connection inventory rules out.
 
     VPLAN: CDC-1
     """
@@ -190,15 +286,21 @@ def test_b8008_reset_is_synchronized():
     `AsyncResetSynchronizer(cd_b8008, ~pll.locked)` by default
     (litex/soc/cores/clock/common.py's connect_clkout(), with_reset=True),
     confirmed by converting the pre-fix CRG to Verilog: b8008_rst was
-    already driven, just by a synchronizer missing the self.reset (POR/
-    rst_n) term cd_sys's equivalent has, and with no ordering gate at all --
-    SPEC.md S-RST-3's "cd_b8008 currently has no AsyncResetSynchronizer" is
-    imprecise about *that*. The actual, spec-relevant defects were the
-    missing self.reset term and the missing S-RST-6 ordering gate.
-    Layering an explicit, correctly-gated synchronizer on *top of* that
-    default (rather than replacing it) elaborates and converts to Verilog
-    without complaint, but produces two separate FD1S3BX flip-flop pairs
-    both driving the same b8008_rst net -- a multi-driver hazard invisible
+    already driven, just by a synchronizer with no ordering gate against
+    cd_sys at all -- SPEC.md S-RST-3's "cd_b8008 currently has no
+    AsyncResetSynchronizer" is imprecise about *that*. (Bare ~pll.locked
+    was never missing POR/rst_n: pll.locked cannot assert until pll.reset
+    deasserts, and pll.reset is itself gated on ~por_done | ~rst_n |
+    self.rst -- see versa_soc.py's PLL comb assignment -- so POR and rst_n
+    already reach cd_b8008 transitively through it, exactly as they reach
+    cd_sys. self.reset, checked below, is a distinct signal: a standing,
+    presently-undriven manual/software reset hook, not a stand-in name for
+    POR/rst_n.) The actual, spec-relevant defect was the missing S-RST-6
+    ordering gate. Layering an explicit, correctly-gated synchronizer on
+    *top of* that default (rather than replacing it) elaborates and
+    converts to Verilog without complaint, but produces two separate
+    FD1S3BX flip-flop pairs both driving the same b8008_rst net -- a
+    multi-driver hazard invisible
     until synthesis. versa_soc.py disables the default (with_reset=False)
     so the explicit synchronizer is cd_b8008's sole driver; the count check
     below guards against that regressing.
@@ -227,8 +329,24 @@ def test_b8008_reset_is_synchronized():
         "this suite can find -- it may be wired to a constant"
     )
     fanin = list_signals(gate)
+    # pll.locked is where POR/rst_n actually reach this gate: pll.reset
+    # (the PLL's own reset input, wired above) is gated on
+    # ~por_done | ~rst_n | self.rst, so pll.locked cannot assert until POR
+    # and rst_n have both cleared -- the same path cd_sys's synchronizer
+    # relies on. self.reset, checked separately below, is a different
+    # signal: nothing in versa_soc.py or BaseSoC drives it, so it is a
+    # constant 0 in the built design. It is still required to be part of
+    # this gate's fan-in -- parity with cd_sys's own gate (line ~445) means
+    # a future software/manual reset wired to it resets both domains
+    # together -- but it carries no POR/rst_n term of its own.
     assert crg.pll.locked in fanin, "cd_b8008 sync not gated on pll.locked"
-    assert crg.reset in fanin, "cd_b8008 sync not gated on self.reset (POR/rst_n)"
+    assert crg.reset in fanin, (
+        "cd_b8008 sync gate lost its self.reset term -- self.reset is a "
+        "separate, currently-undriven manual/software reset input (POR/"
+        "rst_n reach cd_b8008 independently, via pll.locked, already "
+        "checked above), but it must still be present here for parity "
+        "with cd_sys's own gate"
+    )
 
 
 def test_console_reset_precedes_core_reset():
@@ -324,7 +442,7 @@ def test_clock_groups_declared():
     treats differently-clocked domains as unrelated by default, is a
     question for the real build in Task 10, not decidable from Python
     alone. It also does not establish CLK-4's full claim (zero timing
-    paths between the domains besides the three of S-CDC-1) -- that needs
+    paths between the domains besides the four of S-CDC-1) -- that needs
     a post-PnR path report per VPLAN.md's own stated check method for
     CLK-4, which does not exist yet.
 

@@ -423,13 +423,19 @@ class _CRG(LiteXModule):
         # cd_b8008.rst -- a two-driver net that elaborates and converts to
         # Verilog without complaint (confirmed: platform.get_verilog() on the
         # unpatched code emits exactly this, FD1S3BX_2/_3 driving b8008_rst
-        # from bare ~pll.locked, missing the self.reset/POR term cd_sys's own
-        # synchronizer includes and the ResetSignal("sys") ordering term
-        # S-RST-6 requires) but is a genuine multi-driver hazard once it
-        # reaches yosys/nextpnr. Suppressing the PLL's auto-inserted one here
-        # leaves the explicit synchronizer below as cd_b8008's sole driver,
-        # the same shape cd_sys already has (derived via CLKDIVF, not
-        # create_clkout, so it never had this problem).
+        # from bare ~pll.locked) but is a genuine multi-driver hazard once it
+        # reaches yosys/nextpnr. That default gate's real defect relative to
+        # what S-RST-6 needs is narrower than "missing POR/rst_n": bare
+        # ~pll.locked already carries POR/rst_n transitively (pll.reset,
+        # just above, is itself gated on ~por_done | ~rst_n | self.rst, so
+        # pll.locked cannot assert until POR and rst_n have both cleared) --
+        # what it actually lacks is the ResetSignal("sys") ordering term
+        # S-RST-6 requires. (self.reset, used below, is a separate signal:
+        # see the comment at the explicit synchronizer for what it is and
+        # is not.) Suppressing the PLL's auto-inserted synchronizer here
+        # leaves the explicit one below as cd_b8008's sole driver, the same
+        # shape cd_sys already has (derived via CLKDIVF, not create_clkout,
+        # so it never had this problem).
         pll.create_clkout(self.cd_b8008, 25e6, with_reset=False)
         self.specials += [
             Instance("ECLKSYNCB",
@@ -449,11 +455,23 @@ class _CRG(LiteXModule):
         # AsyncResetSynchronizer -- ECP5PLL.create_clkout()'s with_reset=True
         # default silently attaches one via connect_clkout() (see the
         # with_reset=False comment above), gated on bare ~pll.locked. The
-        # defect was that gate: it omitted cd_sys's POR/rst_n term (self.reset)
-        # and any ordering against cd_sys, so ResetSignal("b8008") could
-        # release before cd_sys did. The explicit synchronizer below replaces
-        # that default (which is why with_reset=False was needed above) with
-        # one correctly gated on both terms plus the S-RST-6 ordering term.
+        # defect was that gate: it carried no ordering term against cd_sys's
+        # reset, so ResetSignal("b8008") could release before cd_sys did.
+        # (POR/rst_n were already covered transitively through pll.locked
+        # even in the default gate -- see the with_reset=False comment
+        # above -- so that was never the missing piece.) The explicit
+        # synchronizer below replaces that default (which is why
+        # with_reset=False was needed above) with one gated on pll.locked,
+        # self.reset, and the S-RST-6 ordering term together.
+        #
+        # self.reset here is a plain Signal() that nothing in this file or
+        # in BaseSoC ever drives -- it is a standing hook for a future
+        # software/manual reset input, not a stand-in name for POR/rst_n.
+        # It reads as a constant 0 in the built design. It is included in
+        # this gate (and in cd_sys's, at line ~445 above) purely so that if
+        # something is ever wired to it, both domains reset together; POR
+        # and rst_n reach cd_b8008 through pll.locked, exactly as they reach
+        # cd_sys, not through this signal.
         #
         # The gate is what orders R6 before R7: cd_b8008 is held in reset until
         # cd_sys is out of reset, so the console path can accept a byte before

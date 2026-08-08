@@ -148,7 +148,14 @@ def test_full_flag_consistent_during_live_drain():
 def test_write_when_full_is_rejected():
     """A write while full leaves level at 256 and pulses the error signal.
 
-    VPLAN: TX-4, TX-5, TX-6, CSR-8
+    Dropped a `CSR-8` tag this test previously carried: `CSR-8` is "a read
+    of console_err leaves all its bits unchanged," and this test never
+    reads `console_err` at all -- it only checks `console_tx`'s level/full
+    fields and `err_tx_write_when_full`. `CSR-8` is already legitimately
+    discharged elsewhere (`test_console_err.py::test_reading_err_does_not_
+    clear_it`).
+
+    VPLAN: TX-4, TX-5, TX-6
     """
     dut = _new_dut(sys_clk_freq=75e6)
     out, fired = [], []

@@ -70,10 +70,10 @@ before finishing it.
 
 | | |
 |---|---|
-| Verification rows | 119 total — 32 `PASS`, 87 `UNIMPLEMENTED` |
+| Verification rows | 119 total — 31 `PASS`, 88 `UNIMPLEMENTED` |
 | Imported assumptions (core repo, never re-run here) | 11 |
 | Divergences resolved | 11 of 12 — **D-12 outstanding** |
-| Rows passing | **32** |
+| Rows passing | **31** |
 
 The b8008 core itself is out of scope and treated as verified: 28 module testbenches,
 an exhaustive ALU check over 656,384 cases, 31 program-level verification scripts,
@@ -100,7 +100,10 @@ never run would be documenting a guess.
 
 The console crosses the clock boundary **as a serial line**, not as parallel data.
 That is deliberate: it reduces the byte path's clock-domain-crossing surface to
-zero, and leaves the whole design with exactly three crossings.
+zero, and leaves the whole design with exactly four crossings — three carrying
+data (the byte path, plus the backpressure stall level) and a fourth, asynchronous
+by construction, that orders `cd_b8008`'s reset release against `cd_sys`'s
+(`SPEC.md` `S-CDC-1`).
 
 | Path | Contents |
 |---|---|
