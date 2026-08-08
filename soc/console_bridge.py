@@ -84,3 +84,57 @@ class ConsoleBridge(LiteXModule, AutoCSR):
             self.err_rx_pop_when_empty.eq(
                 self.console_rx_pop.re & ~self.rx_fifo.source.valid),
         ]
+
+        # ---- console_tx / console_tx_data (SPEC.md S-TX-2, S-TX-3) ----------
+        # A write while full is REJECTED and flagged, not silently discarded.
+        #
+        # `full` must NOT be derived from `~tx_fifo.sink.ready`. That signal
+        # is stream.SyncFIFO's `sink.ready`, which for a *buffered* FIFO
+        # (migen/genlib/fifo.py SyncFIFOBuffered) equals the INNER SyncFIFO's
+        # `writable` -- true whenever the inner depth-256 memory has fewer
+        # than 256 entries, with no regard for the extra one-word output
+        # register the wrapper adds ("Increases latency by one cycle" via
+        # `self.readable`/`self.dout`). `tx_fifo.level` (what this CSR
+        # reports) is `fifo.level + self.readable`, i.e. inner memory
+        # occupancy PLUS that extra register, so it can reach up to 257 even
+        # though sink.ready only gates on the inner 256. Verified in sim: a
+        # continuous fill with no drain hits a cycle where level==256 while
+        # sink.ready is still 1 -- full=0 while level says the FIFO is
+        # already at its spec'd capacity (S-TX-1). Accepting the write that
+        # cycle (the brief's naive `full = ~sink.ready` implementation does)
+        # pushes level to 257, permanently exceeding TX_DEPTH: an
+        # over-report of available space, the exact class of bug forbidden
+        # here (same as Task 3's RX-side fix; see console_rx above).
+        #
+        # Fix: make `full` a pure decode of `tx_fifo.level` -- the same
+        # register `console_tx.fields.level` reports -- and gate writes off
+        # that same decode, not off sink.ready. This makes `full ==
+        # (level == 256)` true by construction, every cycle, with no race:
+        # both fields come from one registered signal read in the same
+        # comb evaluation. It also caps real occupancy at 256, never lets
+        # level reach 257, and is safe against the hardware's true
+        # capacity: level >= tx_fifo.fifo.level (inner occupancy) always,
+        # so level < 256 guarantees the inner FIFO is not full and
+        # sink.ready is genuinely 1 -- this never claims room that isn't
+        # there, it only ever holds back the harmless extra 257th slot
+        # (under-report, which Task 3's precedent allows).
+        tx_full = Signal()
+        self.comb += tx_full.eq(self.tx_fifo.level == tx_depth)
+
+        self.console_tx = CSRStatus(name="console_tx", fields=[
+            CSRField("level", size=9),
+            CSRField("full",  size=1)])
+        self.comb += [
+            self.console_tx.fields.level.eq(self.tx_fifo.level),
+            self.console_tx.fields.full.eq(tx_full),
+        ]
+
+        self.console_tx_data = CSR(8, name="console_tx_data")
+        self.err_tx_write_when_full = Signal()
+        self.comb += [
+            self.tx_fifo.sink.valid.eq(
+                self.console_tx_data.re & ~tx_full),
+            self.tx_fifo.sink.data.eq(self.console_tx_data.r),
+            self.err_tx_write_when_full.eq(
+                self.console_tx_data.re & tx_full),
+        ]
