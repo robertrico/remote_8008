@@ -1,5 +1,5 @@
 """Sticky error bits and their clear semantics."""
-from migen import run_simulation
+from migen import ClockDomain, run_simulation
 
 from console_bridge import ConsoleBridge
 
@@ -170,3 +170,95 @@ def test_set_wins_over_concurrent_clear():
 
     run_simulation(dut, gen())
     assert out == [1 << BIT_POP_EMPTY], "a concurrent clear swallowed a fresh fault"
+
+
+def _new_dut_with_reset():
+    """_new_dut(), plus a real 'sys' ClockDomain so a reset can be driven.
+
+    ConsoleBridge itself never declares its own ClockDomain("sys") -- in a
+    real SoC build that domain (and its `rst` signal) is supplied by the CRG
+    one level up (see versa_soc.py's `cd_sys.rst.eq(ResetSignal("sys"))`).
+    Verified directly (scratch experiment against this exact DUT) that
+    without adding one here, migen.sim.core.Simulator auto-creates a
+    *reset_less* "sys" ClockDomain of its own for any clock named in its
+    `clocks=` dict that the fragment doesn't already declare
+    (migen/sim/core.py:293: `ClockDomain(name=clock, reset_less=True)`) --
+    that domain's `.rst` is `None` (ClockDomain's `reset_less` -- a
+    domain-level "no reset signal exists at all", not to be confused with
+    Signal's `reset_less` used on the sticky bits themselves). Driving
+    `ResetSignal("sys")` directly from a generator against that raised
+    `NotImplementedError` in the Evaluator: there is no signal to write to.
+    Adding a real `ClockDomain("sys")` here (test-side only, the same shape
+    production wiring already takes) gives `dut.cd_sys.rst` an actual
+    Signal, so the simulator's own `insert_resets()` (migen/fhdl/tools.py)
+    has a genuine reset to insert and this test can drive one for real.
+    """
+    dut = _new_dut()
+    dut.clock_domains.cd_sys = ClockDomain("sys")
+    return dut
+
+
+def test_sticky_bits_survive_reset():
+    """All three sticky bits, once latched, are still set after a real
+    `cd_sys` reset pulse -- SPEC.md S-CSR-9/S-CSR-10: a fault that provokes
+    a power cycle must still be visible afterward.
+
+    A control in the same test proves the reset actually took effect: tx_fifo
+    is filled to depth (which is what also trips the tx_write_when_full
+    fault), so its `level` is a piece of ordinary, genuinely-reset state
+    sitting at a known nonzero value (256) at the exact moment of the reset.
+    If the reset assertion below were a no-op (e.g. `dut.cd_sys.rst` silently
+    not wired into the sync logic, as this codebase's testbench-write hazard
+    has produced before), `level` would still read 256 afterward and this
+    test would catch it -- a reset that doesn't run makes the sticky-survival
+    assertion trivially true, so this guards against that exact failure mode.
+
+    VPLAN: RST-12
+    """
+    dut = _new_dut_with_reset()
+    out = {}
+
+    def gen():
+        yield
+        # Trip all three fault sources.
+        yield from _pulse_pop_empty(dut)                       # bit 2
+        yield dut.err_rx_overflow.eq(1)                        # bit 0
+        yield
+        yield dut.err_rx_overflow.eq(0)
+        yield
+        for i in range(256):                                   # fill tx_fifo
+            yield dut.console_tx_data.r.eq(i & 0xFF)
+            yield dut.console_tx_data.re.eq(1)
+            yield
+            yield dut.console_tx_data.re.eq(0)
+            yield
+        yield dut.console_tx_data.r.eq(0xFF)                   # rejected: bit 1
+        yield dut.console_tx_data.re.eq(1)
+        yield
+        yield dut.console_tx_data.re.eq(0)
+        yield
+        yield
+
+        all_bits = (1 << BIT_OVERFLOW) | (1 << BIT_TX_FULL) | (1 << BIT_POP_EMPTY)
+        out["err_before"] = (yield from _read_err(dut))
+        out["tx_level_before"] = (yield dut.tx_fifo.level)
+
+        yield dut.cd_sys.rst.eq(1)
+        yield
+        yield
+        yield dut.cd_sys.rst.eq(0)
+        yield
+        yield
+
+        out["err_after"] = (yield from _read_err(dut))
+        out["tx_level_after"] = (yield dut.tx_fifo.level)
+        out["all_bits"] = all_bits
+
+    run_simulation(dut, gen())
+
+    assert out["err_before"] == out["all_bits"], "setup failed to latch all 3 bits"
+    assert out["tx_level_before"] == 256, "setup failed to actually fill tx_fifo"
+    assert out["err_after"] == out["all_bits"], \
+        "a sticky bit did NOT survive reset"
+    assert out["tx_level_after"] == 0, \
+        "control state did not clear -- the reset was never actually applied"
