@@ -283,6 +283,53 @@ def test_pump_reports_errors_on_stderr_without_polluting_stdout(capsys):
     assert board.err_clear_writes == [_ERR_TX_WRITE_WHEN_FULL]
 
 
+def test_pump_reports_dropped_bytes_when_tx_stays_full(monkeypatch, capsys):
+    """This is the failure mode neither software nor hardware can catch on
+    its own: a well-behaved client never writes while console_tx.full is
+    set, so tx_write_when_full never fires, and send() already returns
+    the true accepted count -- the bug is a caller (console_pump) that
+    discards it. A test that only calls console.send() directly and
+    checks its return value would have passed while this bug was live;
+    it has to go through console_pump to catch a dropped return value."""
+    board = FakeBoard(tx_capacity=1)
+    board._tx_accepted.append(0xFF)  # full, and stays full -- nothing drains it
+    monkeypatch.setattr(console.time, "sleep", lambda s: None)
+    stdin = io.BytesIO(b"hello")
+
+    cont = console.console_pump(board, stdin, io.BytesIO(), stdin_ready=True)
+
+    assert cont is True
+    assert bytes(board._tx_accepted) == b"\xff"  # none of "hello" landed
+    err_out = capsys.readouterr().err
+    assert "5 of 5" in err_out
+    assert "dropped" in err_out
+
+
+def test_pump_reports_dropped_bytes_in_ctrl_bracket_branch(monkeypatch, capsys):
+    """Same short-write scenario, but through the exit_idx > 0 branch
+    (bytes preceding a Ctrl-] in the same chunk) -- send()'s return must
+    be checked against exit_idx there too, not just against len(data) in
+    the no-exit-byte branch."""
+    board = FakeBoard(tx_capacity=1)
+    board._tx_accepted.append(0xFF)  # full, and stays full
+    monkeypatch.setattr(console.time, "sleep", lambda s: None)
+    stdin = io.BytesIO(b"ab\x1dcd")
+
+    cont = console.console_pump(board, stdin, io.BytesIO(), stdin_ready=True)
+
+    assert cont is False
+    err_out = capsys.readouterr().err
+    assert "2 of 2" in err_out
+    assert "dropped" in err_out
+
+
+def test_pump_silent_on_stderr_when_all_typed_bytes_accepted(capsys):
+    board = FakeBoard()
+    stdin = io.BytesIO(b"L\r")
+    console.console_pump(board, stdin, io.BytesIO(), stdin_ready=True)
+    assert capsys.readouterr().err == ""
+
+
 def test_pump_silent_on_stderr_when_no_errors(capsys):
     board = FakeBoard(rx_bytes=b"x")
     console.console_pump(board, io.BytesIO(b""), io.BytesIO(), stdin_ready=False)

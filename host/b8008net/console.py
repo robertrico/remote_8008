@@ -207,11 +207,34 @@ def console_pump(board, stdin, stdout, stdin_ready):
         exit_idx = data.find(bytes([EXIT_BYTE]))
         if exit_idx != -1:
             if exit_idx > 0:
-                send(board, data[:exit_idx])
+                _send_and_report(board, data[:exit_idx])
             return False
-        send(board, data)
+        _send_and_report(board, data)
 
     return True
+
+
+def _send_and_report(board, data):
+    """Wrap send() so a short write is never silently swallowed. send()
+    itself already refuses to spin forever or write into a full FIFO --
+    but if console_pump ignores the count it returns, those bytes vanish
+    with nothing said, and neither software nor hardware indicator can
+    ever catch it after the fact: a client that (correctly) never writes
+    while console_tx.full is set never trips tx_write_when_full either.
+    This is the one loss path in this module that the sticky bits cannot
+    see, so it has to be reported here, at the only point that knows how
+    many bytes were asked for versus accepted."""
+    accepted = send(board, data)
+    if accepted < len(data):
+        _report_dropped(len(data) - accepted, len(data))
+
+
+def _report_dropped(dropped, total):
+    """Announce a short TX write on stderr -- never into the byte stream,
+    for the same reason _report_errors keeps its message out of stdout:
+    it must not be mistaken for monitor output."""
+    print(f"-- console: {dropped} of {total} typed byte(s) dropped -- TX "
+          f"FIFO stayed full --", file=sys.stderr)
 
 
 def console_loop(board, stdin=None, stdout=None):
