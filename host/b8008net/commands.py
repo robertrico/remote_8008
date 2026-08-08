@@ -21,6 +21,11 @@
 # bytes. `stop` / `reset` / `step` pulse ctl bits directly -- they control
 # whether the b8008 core's clock runs at all, independent of what firmware
 # (if any) is resident.
+# RETIRED SURFACE. SPEC.md S-PROD-8 removed host-side load/peek/poke/run/step
+# from the product: the monitor provides L/D/W/G in-band over the console.
+# The functions below target CSRs that no longer exist in the gateware and
+# will fail against a conformant build. They are kept only until the console
+# workflow replaces them. Do not add callers.
 import sys
 import time
 

@@ -3,28 +3,27 @@
 # converted Intel-8008 monitor netlist (build/b8008_net_core.v, Task 5).
 #
 # Wraps the VHDL core with:
-#   - dual-clock RAM (b8008-domain port A for the CPU, sys-domain port B on a
-#     wishbone window; word index == absolute 14-bit 8008 address),
+#   - the core's own 16384-byte RAM, b8008-domain port only -- SPEC.md
+#     S-PROD-8 retired the host-facing wishbone window onto it (D-10),
 #   - a b8008-domain ROM read port fed from a 4096-entry init image,
 #   - a console UART bridge (see console_bridge.ConsoleBridge: RS232 PHY +
 #     rx/tx SyncFIFOs, sys-domain only per SPEC.md S-ARCH-1),
-#   - control-CSR clock-domain crossing (sys -> b8008): pulse fields via
-#     PulseSynchronizer, the interrupt vector via MultiReg,
-#   - status CDC (b8008 -> sys) via MultiReg.
+#   - a single clock-domain crossing (sys -> b8008): the console bridge's
+#     backpressure stall, a LEVEL synchronized via MultiReg (SPEC.md
+#     S-CDC-1 X3, S-CDC-3). The retired ctl/status CSRs and their four
+#     PulseSynchronizers (D-8/D-9/D-10) are gone as of Task 7.
 #
-# The RISC-V/Etherbone SoC (Task 7) drives the CSRs and the wishbone window and
-# routes self.dbg to physical pads.
+# The RISC-V/Etherbone SoC routes self.dbg to physical pads.
 #
 import os
 
 from migen import (
     Signal, Instance, Memory, Record, ClockSignal, ResetSignal, READ_FIRST,
 )
-from migen.genlib.cdc import MultiReg, PulseSynchronizer
+from migen.genlib.cdc import MultiReg
 
 from litex.gen import LiteXModule
-from litex.soc.interconnect import wishbone
-from litex.soc.interconnect.csr import CSRStorage, CSRStatus, CSRField, AutoCSR
+from litex.soc.interconnect.csr import AutoCSR
 
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -41,55 +40,16 @@ def load_mem_file(path):
 
 class B8008Core(LiteXModule, AutoCSR):
     def __init__(self, platform, sys_clk_freq, core_v="build/b8008_net_core.v", rom_init=None):
-        # ---- control CSRs (sys domain) -> pulses / level in b8008 domain ----
-        # pulse=True fields drive the CSR's field output high for exactly one
-        # sys cycle on write (csr.py: `If(self.re, field_assign)`); each is fed
-        # through a PulseSynchronizer to a single-cycle b8008-domain pulse.
-        self.ctl = CSRStorage(name="ctl", fields=[
-            CSRField("run_stop",   size=1, pulse=True),
-            CSRField("step_cycle", size=1, pulse=True),
-            CSRField("step_sync",  size=1, pulse=True),
-            CSRField("int_req",    size=1, pulse=True),
-            CSRField("int_vector", size=3)])
-        ctl_pulses = {}
-        for name in ["run_stop", "step_cycle", "step_sync", "int_req"]:
-            ps = PulseSynchronizer("sys", "b8008")
-            self.submodules += ps
-            self.comb += ps.i.eq(getattr(self.ctl.fields, name))
-            ctl_pulses[name] = ps.o
-        int_vec_b = Signal(3)
-        self.specials += MultiReg(self.ctl.fields.int_vector, int_vec_b, "b8008")
-
-        # ---- status: b8008 domain -> sys via MultiReg -----------------------
-        is_running_b, triggered_b, tx_busy_b = Signal(), Signal(), Signal()
-        self.status = CSRStatus(name="status", fields=[
-            CSRField("is_running", size=1),
-            CSRField("triggered",  size=1),
-            CSRField("tx_busy",    size=1)])
-        self.specials += [
-            MultiReg(is_running_b, self.status.fields.is_running),
-            MultiReg(triggered_b,  self.status.fields.triggered),
-            MultiReg(tx_busy_b,    self.status.fields.tx_busy)]
-
-        # ---- RAM: 16384 bytes, dual-clock, byte per 32-bit wishbone word ----
+        # ---- RAM: 16384 bytes, b8008-domain port only ------------------------
         # Monitor uses b8008_top DEFAULT map with RAM_ADDR_BITS=14 and ABSOLUTE
-        # addressing (Task 4 finding). Window convention: wishbone word index ==
-        # absolute 14-bit 8008 address. READ_FIRST pins the read-during-write
-        # contract (old data on read); a sync read every b8008 edge is exactly
-        # what a Migen sync read port gives.
+        # addressing (Task 4 finding). SPEC.md S-PROD-8 retires the host-facing
+        # wishbone window (D-10): the 8008 still needs its own RAM, but nothing
+        # outside this core reads or writes it directly any more. READ_FIRST
+        # pins the read-during-write contract (old data on read); a sync read
+        # every b8008 edge is exactly what a Migen sync read port gives.
         ram = Memory(8, 16384)
         pa = ram.get_port(write_capable=True, clock_domain="b8008", mode=READ_FIRST)  # CPU
-        pb = ram.get_port(write_capable=True, clock_domain="sys",   mode=READ_FIRST)  # wishbone
-        self.specials += ram, pa, pb
-
-        self.bus_ram = wishbone.Interface(data_width=32, adr_width=30)
-        self.sync += self.bus_ram.ack.eq(self.bus_ram.cyc & self.bus_ram.stb & ~self.bus_ram.ack)
-        self.comb += [
-            pb.adr.eq(self.bus_ram.adr[:14]),
-            pb.dat_w.eq(self.bus_ram.dat_w[:8]),
-            pb.we.eq(self.bus_ram.cyc & self.bus_ram.stb & ~self.bus_ram.ack
-                     & self.bus_ram.we & self.bus_ram.sel[0]),
-            self.bus_ram.dat_r.eq(pb.dat_r)]
+        self.specials += ram, pa
 
         # ---- ROM: 4096 bytes, b8008-domain read port ------------------------
         rom = Memory(8, 4096, init=rom_init or [0] * 4096)
@@ -112,6 +72,12 @@ class B8008Core(LiteXModule, AutoCSR):
         ram_cs_n = Signal(name="ram_cs_n")
         self.comb += pa.we.eq(~ram_cs_n & ~ram_rw_n)
 
+        # ---- X3: backpressure stall, cd_sys -> cd_b8008 (SPEC.md S-CDC-1) ---
+        # A LEVEL, not a pulse (S-CDC-3): the synchronizer's 2-cycle latency
+        # (80 ns) is negligible against the 86.805 us byte time.
+        stall_b = Signal()
+        self.specials += MultiReg(self.console.stall, stall_b, "b8008")
+
         # ---- the VHDL core --------------------------------------------------
         platform.add_source(core_v)
         platform.add_source(_GHDL_GATES)  # gate_mdff / gate_midff definitions
@@ -119,13 +85,7 @@ class B8008Core(LiteXModule, AutoCSR):
             i_clk=ClockSignal("b8008"), i_rst=ResetSignal("b8008"),
             o_uart_tx=pads.rx,  # core TX -> bridge RX
             i_uart_rx=pads.tx,  # bridge TX -> core RX
-            i_ctl_run_stop=ctl_pulses["run_stop"],
-            i_ctl_step_cycle=ctl_pulses["step_cycle"],
-            i_ctl_step_sync=ctl_pulses["step_sync"],
-            i_ctl_int=ctl_pulses["int_req"],
-            i_ctl_int_vector=int_vec_b,
-            o_sts_is_running=is_running_b, o_sts_triggered=triggered_b,
-            o_sts_tx_busy=tx_busy_b,
+            i_ext_hold=stall_b,
             o_ram_addr=pa.adr, o_ram_wdata=pa.dat_w, i_ram_rdata=pa.dat_r,
             o_ram_rw_n=ram_rw_n, o_ram_cs_n=ram_cs_n,
             o_rom_addr=pr.adr, i_rom_data=pr.dat_r,

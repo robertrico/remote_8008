@@ -42,6 +42,10 @@ entity b8008_net_core is
         ctl_step_sync  : in std_logic;
         ctl_int        : in std_logic;   -- one interrupt request
         ctl_int_vector : in std_logic_vector(2 downto 0);  -- stable level
+        -- Backpressure hold from the sys-domain console bridge, already
+        -- synchronized into this clock domain by a 2-FF MultiReg on the
+        -- Migen side (SPEC.md S-CDC-1 X3). '1' freezes the phase generator.
+        ext_hold       : in std_logic := '0';
         -- status (clk domain; LiteX side synchronizes)
         sts_is_running : out std_logic;
         sts_triggered  : out std_logic;
@@ -414,7 +418,9 @@ begin
         port map (
             clk_in      => clk,
             reset       => reset_int,
-            run_enable  => dbg_run_enable,        -- Debug hold: '0' freezes phi state machine
+            -- Debug hold OR host backpressure: '0' freezes the phi state
+            -- machine. SPEC.md S-BP-4 -- a hold, never a gated clock.
+            run_enable  => (dbg_run_enable and not ext_hold),
             interrupt   => bootstrap_int or int_req_latch,
             int_vector  => cpu_int_vec,           -- RST 0 for bootstrap, ctl pick after
             ready_in    => '1',                   -- READY hold removed; always ready
