@@ -138,3 +138,32 @@ class ConsoleBridge(LiteXModule, AutoCSR):
             self.err_tx_write_when_full.eq(
                 self.console_tx_data.re & tx_full),
         ]
+
+        # ---- sticky error bits (SPEC.md §11.5, S-CSR-9, S-CSR-12) -----------
+        # Sticky, and survive every reset: a fault that provokes a power cycle
+        # must still be visible afterward (S-CSR-10). Set beats a coinciding
+        # clear -- losing a fresh fault to a concurrent clear would make these
+        # unreliable in exactly the case they exist for.
+        self.err_rx_overflow = Signal()   # driven by the backpressure task
+
+        self.console_err = CSRStatus(name="console_err", fields=[
+            CSRField("rx_overflow",        size=1),
+            CSRField("tx_write_when_full", size=1),
+            CSRField("rx_pop_when_empty",  size=1)])
+        self.console_err_clear = CSR(3, name="console_err_clear")
+
+        sources = [
+            (0, self.err_rx_overflow,          self.console_err.fields.rx_overflow),
+            (1, self.err_tx_write_when_full,   self.console_err.fields.tx_write_when_full),
+            (2, self.err_rx_pop_when_empty,    self.console_err.fields.rx_pop_when_empty),
+        ]
+        for idx, src, field in sources:
+            sticky = Signal(name=f"sticky_err_{idx}", reset_less=True)
+            self.sync += [
+                If(src,
+                    sticky.eq(1)                       # set wins
+                ).Elif(self.console_err_clear.re & self.console_err_clear.r[idx],
+                    sticky.eq(0)
+                )
+            ]
+            self.comb += field.eq(sticky)
