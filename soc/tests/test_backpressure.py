@@ -111,16 +111,36 @@ def test_stall_holds_through_the_band():
     assert out == [1, 1, 0]
 
 
+# SPEC.md S-BP-6: production bounds the bytes that can still land after
+# `stall` is observed at at most 3 (core USART shift register, PHY receive
+# shift register, and the X3 synchronizer's 2-cycle latency). This bridge
+# has none of that hardware -- no 8008, no X3 synchronizer -- so that window
+# cannot emerge on its own from this testbench's stimulus; nothing here
+# forces bytes to keep arriving once the sender could react. The test below
+# therefore injects the worst case directly: once it first observes `stall`
+# high, it deliberately keeps sending IN_FLIGHT_MARGIN more real frames
+# before actually stopping, and checks that RX_HEADROOM's margin absorbs
+# them. This proves the headroom-vs-in-flight-budget arithmetic is sound at
+# this bridge's own boundary; it does NOT prove the X3 synchronizer's real
+# 2-cycle contribution to that budget, which only exists once Task 7 builds
+# the crossing -- that is VPLAN row BP-7 (COCOTB-R), still UNIMPLEMENTED.
+IN_FLIGHT_MARGIN = 3
+
+
 def test_no_overflow_under_sustained_pressure():
-    """No byte is ever presented to a full rx_fifo; the canary stays clear.
+    """Headroom absorbs the worst-case in-flight bytes still landing after
+    `stall` is first observed; no byte is ever presented to a full rx_fifo
+    and the canary stays clear.
 
     VPLAN: BP-6
     """
     dut = ConsoleBridge(**SMALL)
-    violations, err = [], []
+    capacity = dut.rx_fifo.fifo.depth + 1   # SyncFIFOBuffered holds depth+1
+    violations, err, levels = [], [], []
 
     def monitor():
-        for _ in range(S_HWM * 100 + 5000):
+        for _ in range((S_HWM + IN_FLIGHT_MARGIN + 20) * 100 + 2000):
+            levels.append((yield dut.rx_fifo.level))
             if (yield dut.rx_fifo.sink.valid) and not (yield dut.rx_fifo.sink.ready):
                 violations.append(1)
             if (yield dut.err_rx_overflow):
@@ -131,11 +151,25 @@ def test_no_overflow_under_sustained_pressure():
         yield dut.pads.rx.eq(1)
         for _ in range(BIT):
             yield
-        yield from _fill(dut, S_HWM + 8)   # keep sending past the threshold
+        i = 0
+        stalled = False
+        in_flight_remaining = IN_FLIGHT_MARGIN
+        while True:
+            if stalled:
+                if in_flight_remaining <= 0:
+                    break
+                in_flight_remaining -= 1
+            yield from _send(dut, i & 0xFF)
+            i += 1
+            if not stalled and (yield dut.stall):
+                stalled = True   # observed -- stop feeding NEW bytes after
+                                  # IN_FLIGHT_MARGIN more, matching S-BP-6
         for _ in range(200):
             yield
 
     run_simulation(dut, [gen(), monitor()])
+    assert max(levels) <= capacity, \
+        f"rx_fifo.level reached {max(levels)}, exceeds capacity {capacity}"
     assert not violations, "a byte was presented to a full rx_fifo"
     assert not err, "the overflow canary fired"
 
