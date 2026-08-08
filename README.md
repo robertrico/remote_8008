@@ -115,9 +115,13 @@ by construction, that orders `cd_b8008`'s reset release against `cd_sys`'s
 | `firmware/` | VexRiscv DHCP/identity firmware — distinct from the 8008 monitor ROM |
 | `host/` | The `b8008net` Python package and its pytest suite |
 
-Note that `host/`'s current commands cover a surface the spec has since retired
-(`load`, `peek`, `poke`, `run`, `step`). They are not deleted yet; they are simply no
-longer part of the product contract.
+`host/` is `make login`: zero-config discovery (cache, then DNS, then a subnet probe
+sweep — see `host/b8008net/discovery.py`) finds the board and drops you straight into
+the monitor's console. Point at a specific board with `make login HOST=10.0.0.5` to
+skip discovery entirely. Press **Ctrl-]** to leave the session and return to your
+shell. There is no bulk-load command in the CLI — pacing a large transfer (e.g.
+feeding an Intel-HEX file to the monitor's own `L` command) is the host's job, because
+the byte-loss guarantee ends at the core's `uart_rx` pin (`SPEC.md` `S-PROD-6`).
 
 ## Provenance
 

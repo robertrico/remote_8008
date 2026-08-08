@@ -1,203 +1,132 @@
 # cli.py -- b8008net command-line entry point.
 #
-# Thin by design (per Task 10 brief): argument parsing and print formatting
-# only, all real work lives in discovery.py/board.py/commands.py/hexfile.py.
-# First live run against hardware happens in Task 13; the load/peek/poke/
-# run/reset/stop/step subcommands added in Task 12 are exercised here only
-# via `b8008net --help` (install sanity) and the commands.py/hexfile.py unit
-# tests (FakeBoard) -- no live board in this task.
+# Thin by design: argument parsing and print formatting only. discovery.py
+# finds a board, board.py owns the lockfile/litex_server/RemoteClient
+# lifecycle, console.py owns the byte path. SPEC.md S-PROD-2 narrows the
+# product's complete host-visible operation set to two operations -- read a
+# byte, write a byte -- and S-PROD-8 retires every other host-side command
+# this CLI used to expose (load/peek/poke/run/reset/stop/step/interrupt
+# injection): each of those already exists *inside* the monitor's own
+# command set (H/D/W/L/G), reachable over the console `login` opens. The
+# subcommands that used to target those retired CSRs, and the commands.py
+# module that implemented them, are gone (make-login-console-client Task 2)
+# -- the CSRs they wrote (b8008_status/b8008_ctl/the wishbone RAM window)
+# no longer exist in the gateware (D-8/D-9/D-10), so there was nothing left
+# for them to correctly do.
 import argparse
 import sys
+import time
 
-from . import commands, hexfile
+from . import discovery
 from .board import Board
 from .console import console_loop
 
-# b8008_status bits (see b8008_net_core.v / versa_soc.py CSR bank):
-#   bit 0: is_running -- b8008 core executing
-#   bit 1: triggered   -- start/trigger strobe latched
-#   bit 2: tx_busy     -- console TX in flight
-STATUS_RUNNING_BIT   = 0
-STATUS_TRIGGERED_BIT = 1
-STATUS_TX_BUSY_BIT   = 2
+# `login`'s zero-config default -- the standard build output path (see the
+# Makefile's VERSA_DIR). Every other subcommand still requires --csr
+# explicitly; `login` is the one `make login` drives with no arguments.
+DEFAULT_CSR_CSV = "build/versa/csr.csv"
 
-
-def _bit(value, n):
-    return bool((value >> n) & 1)
+RTT_DEFAULT_READS = 50
 
 
 def _connect(args):
-    """Shared Board.connect() call for every subcommand: --csr/--host plus
-    --no-cache (skip the discovery cache read; see discovery.py/board.py's
-    stale-cache handling -- --no-cache forces a fresh DNS/sweep instead of
-    trusting a possibly-dead cached IP)."""
+    """Shared Board.connect() call: --csr/--host plus --no-cache (skip the
+    discovery cache read; see discovery.py/board.py's stale-cache handling
+    -- --no-cache forces a fresh DNS/sweep instead of trusting a possibly-
+    dead cached IP)."""
     return Board.connect(args.csr, host=args.host, use_cache=not args.no_cache)
+
+
+def _measure_rtt(board, reads=RTT_DEFAULT_READS):
+    """Average CSR read round-trip time over `reads` back-to-back reads of
+    console_tx ({level, full} -- read-only, no side effects), in seconds.
+    Backs `b8008net status --rtt`.
+
+    This used to poll the retired b8008_status register; SPEC.md S-PROD-8
+    removed it from the gateware (D-8/D-9) along with the rest of the
+    ctl/status bank, so there is nothing there to read any more. console_tx
+    is part of the permanent product surface (SPEC.md S11.3) and gives the
+    same measurement: litex_server clamps every UDP-transport CSR read to
+    one 32-bit word per round trip, so this is still the real per-byte
+    throughput ceiling for the console."""
+    start = time.monotonic()
+    for _ in range(reads):
+        board.regs.b8008_console_console_tx.read()
+    elapsed = time.monotonic() - start
+    return elapsed / reads
 
 
 def cmd_status(args):
     board = _connect(args)
     try:
-        identifier = board.identifier()
-        status = board.regs.b8008_status.read()
-
-        print(f"identifier:  {identifier}")
+        print(f"identifier:  {board.identifier()}")
         print(f"board host:  {board.host}")
-        print(f"is_running:  {_bit(status, STATUS_RUNNING_BIT)}")
-        print(f"triggered:   {_bit(status, STATUS_TRIGGERED_BIT)}")
-        print(f"tx_busy:     {_bit(status, STATUS_TX_BUSY_BIT)}")
 
         if args.rtt:
-            rtt = commands.measure_rtt(board)
+            rtt = _measure_rtt(board)
             print(f"avg CSR read RTT: {rtt * 1000:.2f} ms "
-                  f"({commands.RTT_DEFAULT_READS} reads)")
+                  f"({RTT_DEFAULT_READS} reads)")
     finally:
         board.close()
     return 0
 
 
-def cmd_console(args):
-    board = _connect(args)
+def _discovery_failure_message():
+    """The message `login` prints when discovery finds nothing.
+
+    The one thing this MUST do (see the task brief this was built against):
+    name where it looked, not just that it failed. Someone running this
+    against fresh hardware with no other way to reach the board needs the
+    DNS names tried and the subnet range swept so they have somewhere to
+    start -- a bare "board not found" (or worse, a traceback) leaves them
+    nowhere. See discovery.py's discover() for the actual cache -> DNS ->
+    sweep order this describes."""
+    lines = [
+        "error: could not find the board on the network "
+        "(no cached host, DNS lookup failed, and the probe sweep got no reply).",
+        f"  DNS names tried: {', '.join(discovery.DNS_NAMES)}",
+    ]
     try:
+        ip, netmask = discovery.local_ipv4_and_netmask()
+        candidates = discovery.subnet_candidates(ip, netmask)
+        if candidates:
+            lines.append(
+                f"  subnet swept: {candidates[0]}-{candidates[-1]} "
+                f"({len(candidates)} host(s), netmask {netmask}, from this "
+                f"machine's address {ip})")
+        else:
+            lines.append(
+                f"  subnet swept: no other hosts on {ip}/{netmask}")
+    except OSError:
+        lines.append(
+            "  subnet swept: none -- could not determine this machine's "
+            "own IPv4 address/route (no network connectivity?)")
+    lines.append(
+        "  is the board powered on, plugged into this LAN, and has it had "
+        "time to acquire a DHCP lease? Once you know its address, "
+        "`--host <ip>` (or `make login HOST=<ip>`) skips discovery entirely.")
+    return "\n".join(lines)
+
+
+def cmd_login(args):
+    """Resolve a host (explicit --host, else discover()), connect, print a
+    one-line banner naming what was reached, then hand off to the
+    interactive console (Ctrl-] to exit). `console` is a plain alias for
+    this -- see build_parser()."""
+    host = args.host
+    if host is None:
+        host = discovery.discover(use_cache=not args.no_cache)
+        if host is None:
+            print(_discovery_failure_message(), file=sys.stderr)
+            return 1
+
+    board = Board.connect(args.csr, host=host, use_cache=not args.no_cache)
+    try:
+        print(f"-- connected: {board.host}  (identifier: {board.identifier()!r}) --",
+              file=sys.stderr)
         console_loop(board)
     finally:
         board.close()
-    return 0
-
-
-# Errors that mean "the operation was refused/failed cleanly" -- caught at
-# the CLI boundary and reported as a one-line message + nonzero exit, not a
-# traceback. (AddressRangeError subclasses ValueError, which argparse-style
-# CLIs traditionally reserve for usage errors, but here it's a runtime
-# range check against the connected board's RAM window, not a parse error.)
-_COMMAND_ERRORS = (
-    commands.AddressRangeError,
-    commands.VerifyError,
-    commands.NotStoppedError,
-    commands.RunStateError,
-    hexfile.HexFileError,
-)
-
-
-def _parse_addr(text):
-    return int(text, 16)
-
-
-def cmd_load(args):
-    try:
-        with open(args.file, encoding="ascii") as f:
-            segments = hexfile.parse(f.read())
-    except (OSError, hexfile.HexFileError) as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-
-    board = _connect(args)
-    try:
-        commands.load(board, segments, force=args.force)
-    except _COMMAND_ERRORS as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-    finally:
-        board.close()
-
-    total = sum(len(data) for _, data in segments)
-    print(f"loaded and verified {total} bytes across {len(segments)} segment(s)")
-    return 0
-
-
-def cmd_peek(args):
-    addr = _parse_addr(args.addr)
-    board = _connect(args)
-    try:
-        data = commands.peek(board, addr, args.length)
-    except _COMMAND_ERRORS as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-    finally:
-        board.close()
-
-    print(commands.format_hexdump(addr, data))
-    return 0
-
-
-def cmd_poke(args):
-    addr = _parse_addr(args.addr)
-    try:
-        values = [int(b, 16) for b in args.bytes]
-    except ValueError as e:
-        print(f"error: invalid byte value ({e})", file=sys.stderr)
-        return 1
-    if any(not (0 <= v <= 0xFF) for v in values):
-        print("error: byte values must be 00-FF", file=sys.stderr)
-        return 1
-
-    board = _connect(args)
-    try:
-        commands.poke(board, addr, values)
-    except _COMMAND_ERRORS as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-    finally:
-        board.close()
-
-    print(f"wrote and verified {len(values)} byte(s) at 0x{addr:04X}")
-    return 0
-
-
-def cmd_run(args):
-    addr = _parse_addr(args.addr)
-    board = _connect(args)
-    try:
-        commands.run(board, addr)
-    except _COMMAND_ERRORS as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-    finally:
-        board.close()
-
-    print(f"sent: G {addr:04X}")
-    return 0
-
-
-def cmd_reset(args):
-    board = _connect(args)
-    try:
-        commands.reset(board)
-    except _COMMAND_ERRORS as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-    finally:
-        board.close()
-
-    print("core reset (stop-then-run cycle) -- monitor banner should "
-          "reappear in ~400 ms")
-    return 0
-
-
-def cmd_stop(args):
-    board = _connect(args)
-    try:
-        commands.stop(board)
-    except _COMMAND_ERRORS as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-    finally:
-        board.close()
-
-    print("core stopped")
-    return 0
-
-
-def cmd_step(args):
-    board = _connect(args)
-    try:
-        commands.step(board, sync=(args.mode == "sync"))
-    except _COMMAND_ERRORS as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-    finally:
-        board.close()
-
-    print(f"stepped ({args.mode or 'cycle'})")
     return 0
 
 
@@ -217,6 +146,21 @@ def _add_connection_args(parser):
              "rediscovery is retried once before giving up.")
 
 
+def _add_login_args(parser):
+    """Like _add_connection_args, but --csr defaults to the standard build
+    output path instead of being required -- `login`/`console` are the
+    zero-config entry points `make login` drives with no arguments at all."""
+    parser.add_argument(
+        "--csr", default=DEFAULT_CSR_CSV,
+        help=f"Path to the SoC csr.csv (default: {DEFAULT_CSR_CSV}).")
+    parser.add_argument(
+        "--host", default=None,
+        help="Board host/IP. Omit for zero-config discovery (cache -> DNS -> probe sweep).")
+    parser.add_argument(
+        "--no-cache", action="store_true",
+        help="Skip the discovery cache read; force fresh DNS/probe-sweep discovery.")
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="b8008net",
@@ -230,94 +174,24 @@ def build_parser():
     status_parser.add_argument(
         "--rtt", action="store_true",
         help=f"Also measure and print average CSR read round-trip time "
-             f"({commands.RTT_DEFAULT_READS} reads) -- litex_server clamps "
-             "UDP CSR reads to one 32-bit word per round trip, so this is "
-             "the real per-byte/word throughput ceiling for console/load/"
-             "poke on hardware.")
+             f"({RTT_DEFAULT_READS} reads) -- litex_server clamps UDP CSR "
+             "reads to one 32-bit word per round trip, so this is the real "
+             "per-byte throughput ceiling for the console.")
     status_parser.set_defaults(func=cmd_status)
 
+    login_parser = subparsers.add_parser(
+        "login", help="Discover the board (or connect to --host) and open "
+                       "an interactive console session with the 8008 "
+                       "monitor (Ctrl-] to exit).")
+    _add_login_args(login_parser)
+    login_parser.set_defaults(func=cmd_login)
+
+    # `console` is a plain alias of `login` -- same implementation, same
+    # arguments, just the name someone might reach for out of habit.
     console_parser = subparsers.add_parser(
-        "console", help="Interactive console session with the b8008 monitor (Ctrl-] to exit).")
-    _add_connection_args(console_parser)
-    console_parser.set_defaults(func=cmd_console)
-
-    load_parser = subparsers.add_parser(
-        "load", help="Load an Intel-HEX file into RAM (0x1000-0x3FFF), "
-                      "with burst read-back verification.")
-    _add_connection_args(load_parser)
-    load_parser.add_argument("file", help="Intel-HEX file (as produced by p2hex).")
-    load_parser.add_argument(
-        "--force", action="store_true",
-        help="Load even if the core is currently running (status.is_running).")
-    load_parser.set_defaults(func=cmd_load)
-
-    peek_parser = subparsers.add_parser(
-        "peek", help="Hexdump RAM starting at ADDR (0x1000-0x3FFF).")
-    _add_connection_args(peek_parser)
-    peek_parser.add_argument("addr", help="Hex address, e.g. 2000 or 0x2000.")
-    peek_parser.add_argument(
-        "length", nargs="?", type=int, default=16,
-        help="Number of bytes to read (default 16).")
-    peek_parser.set_defaults(func=cmd_peek)
-
-    poke_parser = subparsers.add_parser(
-        "poke", help="Write bytes to RAM starting at ADDR (0x1000-0x3FFF), "
-                      "each verified by readback.")
-    _add_connection_args(poke_parser)
-    poke_parser.add_argument("addr", help="Hex address, e.g. 2000 or 0x2000.")
-    poke_parser.add_argument(
-        "bytes", nargs="+", help="Hex byte value(s), e.g. AA BB 01.")
-    poke_parser.set_defaults(func=cmd_poke)
-
-    run_parser = subparsers.add_parser(
-        "run",
-        help="Jump the monitor to ADDR (sends 'G ADDR' via the console).",
-        description="Send 'G ADDR' through the console so the monitor "
-                    "firmware executes the jump itself. If the core is "
-                    "stopped, it is restarted first (one ctl.run_stop "
-                    "pulse) -- restarting re-bootstraps the monitor, so "
-                    "the '8008 Monitor' banner reappears (~400 ms) and is "
-                    "awaited (up to ~3 s) before the G command is sent; "
-                    "if no banner appears, G is sent anyway with a warning.")
-    _add_connection_args(run_parser)
-    run_parser.add_argument("addr", help="Hex address, e.g. 2000 or 0x2000.")
-    run_parser.set_defaults(func=cmd_run)
-
-    reset_parser = subparsers.add_parser(
-        "reset",
-        help="Restart the monitor (stop-then-run cycle).",
-        description="Restart the monitor. There is no reset CSR field -- "
-                    "this does a stop-then-run cycle on ctl.run_stop, which "
-                    "re-bootstraps the b8008 core: the '8008 Monitor' banner "
-                    "reappears on the console ~400 ms later, same as "
-                    "power-on. Anything the previous program was doing is "
-                    "abandoned; RAM contents survive (only the core is "
-                    "reset, not the RAM).")
-    _add_connection_args(reset_parser)
-    reset_parser.set_defaults(func=cmd_reset)
-
-    stop_parser = subparsers.add_parser(
-        "stop",
-        help="Halt the b8008 core's clock (ctl.run_stop, toggle-and-verify).",
-        description="Halt the b8008 core's clock via ctl.run_stop "
-                    "(toggle-and-verify, max 3 attempts). NOTE: leaving the "
-                    "stopped state is always a monitor RESTART, not a "
-                    "resume -- 'reset' does it explicitly, and 'run ADDR' "
-                    "on a stopped core restarts it automatically (then "
-                    "waits for the banner) before sending G. The banner "
-                    "reappearing ~400 ms after any of these is expected, "
-                    "same as power-on.")
-    _add_connection_args(stop_parser)
-    stop_parser.set_defaults(func=cmd_stop)
-
-    step_parser = subparsers.add_parser(
-        "step", help="Single-step the core (only meaningful while stopped; "
-                      "warns if the core is running).")
-    _add_connection_args(step_parser)
-    step_parser.add_argument(
-        "mode", nargs="?", choices=["sync"], default=None,
-        help="Omit for a plain cycle step, or 'sync' for a state-boundary step.")
-    step_parser.set_defaults(func=cmd_step)
+        "console", help="Alias for `login`.")
+    _add_login_args(console_parser)
+    console_parser.set_defaults(func=cmd_login)
 
     return parser
 

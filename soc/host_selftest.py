@@ -12,18 +12,31 @@
 #   litex_server --udp --udp-ip <board-ip>        # in one shell
 #   python host_selftest.py --csr build/versa/csr.csv --host <board-ip>
 #
-# Four checks (exit 0 iff all pass):
+# Three checks (exit 0 iff all pass):
 #   1. Connect, print the SoC identifier.
-#   2. RAM window: burst write 0..255 to the b8008_ram window, read back, assert.
-#   3. Console RX: poll b8008_rxlevel, drain b8008_rxtx, assert the "8008 "
+#   2. Console RX: poll the console_rx/console_rx_pop FIFO (non-destructive
+#      read, explicit pop -- SPEC.md S-RX-3/S-RX-4), assert the "8008 "
 #      banner prefix; print the decoded banner.
-#   4. Console TX->RX: send a monitor command ('H' + CR, the help command from
-#      b8008_monitor.asm) via b8008_rxtx, assert the "Help" response echoes back.
+#   3. Console TX->RX: send a monitor command ('H' + CR, the help command from
+#      b8008_monitor.asm) via console_tx_data, assert the "Help" response
+#      echoes back.
+#
+# RETIRED (make-login-console-client Task 2): this used to run a check
+# between what are now [1] and [2] -- a wishbone RAM-window burst
+# write/readback against client.mems.b8008_ram. SPEC.md S-PROD-8 retired the
+# host-facing RAM window entirely (D-10, csr.csv confirms b8008_ram no
+# longer appears in the memory map): the 8008's 16KB RAM is wired to the
+# core's own b8008-domain port only now (soc/b8008_integration.py), with no
+# host-reachable CSR/wishbone path to it at all. There is nothing left for a
+# host-side check to exercise, so the check is gone rather than left calling
+# a memory region that no longer exists -- recorded here instead of leaving
+# a silent gap in the numbering.
 #
 # CSR/memory names carry the SoC's "b8008_" bank prefix (self.b8008 = B8008Core
-# in versa_soc.py); the RAM window is the b8008_ram memory region. The wishbone
-# window is word-per-32-bit: word index i (== absolute 14-bit 8008 address) is
-# at byte address base + 4*i.
+# in versa_soc.py); the console registers carry the console sub-bank's own
+# prefix too (b8008_console_console_*, see console_bridge.py). Never hardcode
+# an address -- everything here goes through litex's regs/bases lookup, which
+# is generated from the live csr.csv.
 # ----------------------------------------------------------------------------
 import argparse
 import os
@@ -79,51 +92,53 @@ def decode_printable(buf):
 
 
 # ── board-interaction helpers (take a RemoteClient-like `client`) ────────────
-def _import_read_identifier():
-    """Import the single shared identifier reader (b8008net.board, Task 10).
+def _import_from_b8008net(module_name):
+    """Import `module_name` from the sibling b8008net package (host/b8008net/).
 
     Lazy + fallback so this script stays runnable standalone with only litex
     installed: when the b8008net package isn't pip-installed, its sources
     still live next to this file (host/b8008net/), so put host/ on sys.path
     and import from there. Kept out of module top-level so the pure helpers
-    above remain importable with zero third-party deps."""
+    above remain importable with zero third-party deps. Shared by
+    get_identifier() (board.read_identifier) and the console checks below
+    (console.drain/console.send), so there is exactly one import path for
+    "the b8008net package isn't installed yet" instead of one per caller."""
+    import importlib
     try:
-        from b8008net.board import read_identifier
+        return importlib.import_module(f"b8008net.{module_name}")
     except ImportError:
         sys.path.insert(0, os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "host"))
-        from b8008net.board import read_identifier
-    return read_identifier
+        return importlib.import_module(f"b8008net.{module_name}")
 
 
 def get_identifier(client):
     """Best-effort read of the SoC identifier string."""
-    ident = _import_read_identifier()(client)
+    read_identifier = _import_from_b8008net("board").read_identifier
+    ident = read_identifier(client)
     return "<no identifier_mem>" if ident is None else ident
 
 
-def ram_window_base(client):
-    return client.mems.b8008_ram.base
+def drain_rx(client):
+    """Drain the console RX FIFO via the non-destructive console_rx /
+    console_rx_pop protocol (SPEC.md S-RX-3/S-RX-4): delegate to
+    b8008net.console.drain(), the single implementation of that bit layout
+    and protocol (see its docstring for why read and pop are split, and why
+    that split must not be "simplified" back into one destructive read),
+    rather than re-deriving it here. Bounded at console.DRAIN_MAX_BYTES
+    (4096, the RX FIFO depth), same as every other caller of that
+    function."""
+    return _import_from_b8008net("console").drain(client)
 
 
-def ram_write_readback(client, count=256):
-    """Burst-write 0..count-1 to the RAM window, read back, compare."""
-    base = ram_window_base(client)
-    expected = [i & 0xff for i in range(count)]
-    for i, v in enumerate(expected):
-        client.write(base + 4 * i, v)
-    actual = [client.read(base + 4 * i) & 0xff for i in range(count)]
-    return compare_bytes(expected, actual)
-
-
-def drain_rx(client, max_bytes=4096):
-    """Drain the console RX FIFO via b8008_rxlevel/b8008_rxtx CSRs."""
-    out = bytearray()
-    while len(out) < max_bytes:
-        if client.regs.b8008_rxlevel.read() == 0:
-            break
-        out.append(client.regs.b8008_rxtx.read() & 0xff)
-    return bytes(out)
+def send_command(client, data):
+    """Push `data` into the console TX (monitor RX) via
+    b8008net.console.send() -- checks console_tx.full before every byte and
+    paces TX_GAP_S between them (SPEC.md S-PROD-6/S-TX-2/S-TX-3), the same
+    protocol the interactive console uses. A short write here (FIFO stuck
+    full) simply shows up as poll_marker() below never seeing HELP_MARKER
+    arrive -- check [3]'s FAIL output names that explicitly."""
+    _import_from_b8008net("console").send(client, data)
 
 
 def poll_banner(client, timeout_s=3.0, poll_s=0.02):
@@ -136,12 +151,6 @@ def poll_banner(client, timeout_s=3.0, poll_s=0.02):
             return bytes(buf)
         time.sleep(poll_s)
     return bytes(buf)
-
-
-def send_command(client, data):
-    """Push each byte of `data` into the console TX (monitor RX) via b8008_rxtx."""
-    for b in bytes(data):
-        client.regs.b8008_rxtx.write(b)
 
 
 def poll_marker(client, marker, timeout_s=3.0, poll_s=0.02):
@@ -164,29 +173,21 @@ def run_checks(client):
     ident = get_identifier(client)
     print(f"[1] connected; identifier: {ident!r}  PASS")
 
-    # 2: RAM window burst write/readback.
-    ok, idx = ram_write_readback(client, count=256)
-    if ok:
-        print("[2] RAM window: 256 bytes write/readback  PASS")
-    else:
-        print(f"[2] RAM window: mismatch at index {idx}  FAIL")
-        failures += 1
-
-    # 3: console banner.
+    # 2: console banner.
     banner = poll_banner(client)
     if find_prefix(banner, BANNER_PREFIX):
-        print(f"[3] console banner: {decode_printable(banner)!r}  PASS")
+        print(f"[2] console banner: {decode_printable(banner)!r}  PASS")
     else:
-        print(f"[3] console banner: got {decode_printable(banner)!r}  FAIL")
+        print(f"[2] console banner: got {decode_printable(banner)!r}  FAIL")
         failures += 1
 
-    # 4: command round-trip.
+    # 3: command round-trip.
     send_command(client, HELP_COMMAND)
     resp = poll_marker(client, HELP_MARKER)
     if HELP_MARKER in resp:
-        print(f"[4] command 'H' -> {decode_printable(resp)!r}  PASS")
+        print(f"[3] command 'H' -> {decode_printable(resp)!r}  PASS")
     else:
-        print(f"[4] command 'H' -> got {decode_printable(resp)!r}  FAIL")
+        print(f"[3] command 'H' -> got {decode_printable(resp)!r}  FAIL")
         failures += 1
 
     return failures
