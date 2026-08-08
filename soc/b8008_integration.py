@@ -6,8 +6,8 @@
 #   - dual-clock RAM (b8008-domain port A for the CPU, sys-domain port B on a
 #     wishbone window; word index == absolute 14-bit 8008 address),
 #   - a b8008-domain ROM read port fed from a 4096-entry init image,
-#   - a console UART bridge (RS232 PHY + rx/tx SyncFIFOs + CSRs), copied strobe-
-#     for-strobe from litex.soc.cores.uart at the pinned tag,
+#   - a console UART bridge (see console_bridge.ConsoleBridge: RS232 PHY +
+#     rx/tx SyncFIFOs, sys-domain only per SPEC.md S-ARCH-1),
 #   - control-CSR clock-domain crossing (sys -> b8008): pulse fields via
 #     PulseSynchronizer, the interrupt vector via MultiReg,
 #   - status CDC (b8008 -> sys) via MultiReg.
@@ -23,9 +23,8 @@ from migen import (
 from migen.genlib.cdc import MultiReg, PulseSynchronizer
 
 from litex.gen import LiteXModule
-from litex.soc.interconnect import wishbone, stream
-from litex.soc.interconnect.csr import CSRStorage, CSRStatus, CSR, CSRField, AutoCSR
-from litex.soc.cores.uart import RS232PHY
+from litex.soc.interconnect import wishbone
+from litex.soc.interconnect.csr import CSRStorage, CSRStatus, CSRField, AutoCSR
 
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -97,36 +96,11 @@ class B8008Core(LiteXModule, AutoCSR):
         pr = rom.get_port(clock_domain="b8008")
         self.specials += rom, pr
 
-        # ---- console bridge: RS232-level serial <-> CSR FIFOs ---------------
-        # Strobe wiring copied verbatim from litex.soc.cores.uart.UART at this
-        # tag: TX pushes tx_fifo on _rxtx.re (read-enable-as-write for the CSR
-        # write side), RX pops rx_fifo on _rxtx.we (rx_fifo_rx_we path). PHY is
-        # clocked in the sys domain at sys_clk_freq (explicit -- platforms carry
-        # no freq; a hasattr fallback would silently mis-clock the baud divisor).
-        pads = Record([("tx", 1), ("rx", 1)])
-        self.submodules.phy = RS232PHY(pads, clk_freq=sys_clk_freq, baudrate=115200)
-        rx_fifo = stream.SyncFIFO([("data", 8)], 4096, buffered=True)
-        tx_fifo = stream.SyncFIFO([("data", 8)], 256, buffered=True)
-        self.submodules += rx_fifo, tx_fifo
+        # ---- console bridge (SPEC.md S-ARCH-1: sys-domain, serial crossing) ---
+        from console_bridge import ConsoleBridge
 
-        self._rxtx    = CSR(8, name="rxtx")
-        self._rxlevel = CSRStatus(13, name="rxlevel")
-        self._txfull  = CSRStatus(name="txfull")
-        self._rxempty = CSRStatus(name="rxempty")
-        self.comb += [
-            # PHY <-> FIFOs.
-            self.phy.source.connect(rx_fifo.sink),   # PHY RX -> rx_fifo
-            tx_fifo.source.connect(self.phy.sink),   # tx_fifo -> PHY TX
-            # CSR write (re) --> TX FIFO.
-            tx_fifo.sink.valid.eq(self._rxtx.re),
-            tx_fifo.sink.data.eq(self._rxtx.r),
-            # RX FIFO --> CSR read (w), pop on we.
-            self._rxtx.w.eq(rx_fifo.source.data),
-            rx_fifo.source.ready.eq(self._rxtx.we),
-            # Status.
-            self._rxlevel.status.eq(rx_fifo.level),
-            self._txfull.status.eq(~tx_fifo.sink.ready),
-            self._rxempty.status.eq(~rx_fifo.source.valid)]
+        self.console = ConsoleBridge(sys_clk_freq=sys_clk_freq)
+        pads = self.console.pads
 
         # ---- debug bus: expose as a Record for the SoC to route to pads -----
         self.dbg = Record([
