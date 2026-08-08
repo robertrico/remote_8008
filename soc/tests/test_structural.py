@@ -289,3 +289,56 @@ def test_console_reset_precedes_core_reset():
         f"(found domains: {finder.domains}); cd_b8008 can release before "
         f"cd_sys does, which SPEC.md S-RST-6 forbids"
     )
+
+
+def test_clock_groups_declared():
+    """The build declares cd_sys and cd_b8008 as an asynchronous group.
+
+    `soc.platform.toolchain.false_paths` is the real, verified mechanism at
+    this LiteX version: `Platform.add_false_path_constraints()` (generic_
+    platform.py) fans out to `Platform.add_false_path_constraint()`
+    (litex/build/lattice/platform.py), which forwards to
+    `GenericToolchain.add_false_path_constraint()` (generic_toolchain.py) --
+    LatticeTrellisToolchain never overrides it -- and that base method's
+    entire effect is `self.false_paths.add((from_, to))`.
+
+    A naive `"b8008" in str(pair)` check (as originally sketched) would
+    pass or fail for the wrong reason: Signal.__repr__ (migen/fhdl/
+    structure.py) prints the *backtrace* name, which for every
+    ClockDomain.clk is literally "clk" (inferred from the `self.clk = ...`
+    assignment in ClockDomain.__init__) -- never the domain's
+    name_override ("b8008_clk"). So this checks identity of the actual
+    `cd_sys.clk`/`cd_b8008.clk` Signal objects instead.
+
+    This constraint is currently inert for the real build: confirmed by
+    reading litex/build/lattice/trellis.py and yosys_nextpnr_toolchain.py,
+    `LatticeTrellisToolchain` never reads `self.false_paths` when writing
+    the `.lpf` (`build_io_constraints()` only walks `named_sc`/`named_pc`),
+    and `build_timing_constraints()` is the `GenericToolchain` no-op stub
+    for this toolchain. `_build_pdc`, the function that DOES turn
+    `toolchain.false_paths` into constraint text, exists only in
+    litex/build/lattice/radiant.py and oxide.py -- the Nexus-family
+    toolchains, not trellis/ecp5. So this test verifies the constraint is
+    *declared* (S-CLK-3's literal ask), not that nextpnr *acts* on it;
+    whether nextpnr-ecp5 needs an .lpf-level nudge at all, or already
+    treats differently-clocked domains as unrelated by default, is a
+    question for the real build in Task 10, not decidable from Python
+    alone. It also does not establish CLK-4's full claim (zero timing
+    paths between the domains besides the three of S-CDC-1) -- that needs
+    a post-PnR path report per VPLAN.md's own stated check method for
+    CLK-4, which does not exist yet.
+
+    VPLAN: CLK-3, CLK-4
+    """
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    from versa_soc import BaseSoC
+
+    soc = BaseSoC(sys_clk_freq=75e6)
+    false_paths = soc.platform.toolchain.false_paths
+    sys_clk, b8008_clk = soc.crg.cd_sys.clk, soc.crg.cd_b8008.clk
+    assert (sys_clk, b8008_clk) in false_paths or (b8008_clk, sys_clk) in false_paths, (
+        "no false-path constraint between the actual cd_sys.clk/cd_b8008.clk "
+        "Signal objects in toolchain.false_paths; the timing tool will try "
+        "to close paths that S-CDC-1 says do not exist"
+    )

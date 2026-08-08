@@ -445,9 +445,15 @@ class _CRG(LiteXModule):
             AsyncResetSynchronizer(self.cd_sys, ~pll.locked | self.reset),
         ]
 
-        # SPEC.md S-RST-4 / S-RST-6. cd_b8008 previously had NO reset
-        # synchronizer at all, so ResetSignal("b8008") was never driven and the
-        # core was reset only by its own internal POR counter.
+        # SPEC.md S-RST-4 / S-RST-6. cd_b8008 always had an
+        # AsyncResetSynchronizer -- ECP5PLL.create_clkout()'s with_reset=True
+        # default silently attaches one via connect_clkout() (see the
+        # with_reset=False comment above), gated on bare ~pll.locked. The
+        # defect was that gate: it omitted cd_sys's POR/rst_n term (self.reset)
+        # and any ordering against cd_sys, so ResetSignal("b8008") could
+        # release before cd_sys did. The explicit synchronizer below replaces
+        # that default (which is why with_reset=False was needed above) with
+        # one correctly gated on both terms plus the S-RST-6 ordering term.
         #
         # The gate is what orders R6 before R7: cd_b8008 is held in reset until
         # cd_sys is out of reset, so the console path can accept a byte before
@@ -528,6 +534,13 @@ class BaseSoC(SoCCore):
             rom_init     = load_mem_file(os.path.join(_HERE, "..", "src", "rom_baked.mem")))
         # SPEC.md S-PROD-8 (D-10): no host-facing wishbone window onto the
         # 8008's RAM. B8008Core exposes no bus_ram any more (Task 7).
+
+        # SPEC.md S-CLK-3. cd_sys and cd_b8008 both descend from one ECP5PLL
+        # but no fixed phase relationship between them is declared or relied
+        # upon. The three crossings of S-CDC-1 are all synchronized, so the
+        # timing tool must not attempt to close paths between the domains.
+        platform.add_false_path_constraints(
+            self.crg.cd_sys.clk, self.crg.cd_b8008.clk)
 
         # Route the b8008 debug bus to the X3 expansion pads.
         dbg = platform.request("b8008_dbg")
