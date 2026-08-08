@@ -269,11 +269,29 @@ accepted product limitation, not an oversight (§15, U-1).
 
 ### 6.2 Known defect in the current RTL
 
-`S-RST-3` `cd_b8008` currently has **no `AsyncResetSynchronizer`**; only `cd_sys`
-does (`versa_soc.py:430`). `ResetSignal("b8008")` is therefore never driven, and
-`b8008_integration.py:145` feeds that undriven signal to the core's `i_rst`. The
-core is today reset **only** by its own internal POR counter inside
-`src/b8008_net_core.vhdl`.
+`S-RST-3` `cd_b8008` **does** have an `AsyncResetSynchronizer`, but it is gated on
+the wrong condition. `ECP5PLL.create_clkout()` defaults `with_reset=True`
+(`litex/soc/cores/clock/lattice_ecp5.py:48`), and `connect_clkout()`
+(`litex/soc/cores/clock/common.py:129-131`) therefore auto-attaches
+`AsyncResetSynchronizer(cd_b8008, ~pll.locked)`. `ResetSignal("b8008")` is driven.
+
+The defect is the gate, not the absence. `~pll.locked` omits `cd_sys`'s `self.reset`
+term (POR and `rst_n`) and carries no dependency on `cd_sys`'s reset state, so
+`cd_b8008` can release **before** `cd_sys` — violating the ordering `S-RST-6`
+requires.
+
+A correction that adds a second synchronizer without disabling the automatic one
+produces **two drivers** on `b8008_rst`: the ECP5 lowering
+(`litex/build/lattice/common.py`) instantiates a fresh `FD1S3BX` pair per
+`AsyncResetSynchronizer` special. The fix must pass `with_reset=False` to
+`create_clkout` and supply a single correctly-gated synchronizer.
+
+*(Corrected 2026-08-08. This clause previously asserted that `cd_b8008` had no
+synchronizer at all and that `i_rst` was undriven. That was wrong — it was written
+from reading `_CRG`'s explicit `specials` list without accounting for what
+`create_clkout` attaches implicitly. Recorded rather than silently edited, because
+the spec being wrong about the design is exactly the failure this document exists
+to prevent.)*
 
 `S-RST-4` This shall be corrected. `cd_b8008` shall have an `AsyncResetSynchronizer`
 driven from the same condition as `cd_sys` (`~pll.locked | reset`), so that the core's
@@ -321,7 +339,7 @@ is non-zero and the bytes readable there begin with `"8008 "`.
 
 ## 7. Clock-domain crossing inventory
 
-`S-CDC-1` The product contains exactly **three** crossings. Any fourth is a design
+`S-CDC-1` The product contains exactly **four** crossings. Any fifth is a design
 error.
 
 | # | Signal | From | To | Mechanism | Status |
@@ -329,6 +347,16 @@ error.
 | X1 | core `uart_tx` serial line | `cd_b8008` | `cd_sys` | 2-FF `MultiReg` inside `RS232PHYRX` (`litex/soc/cores/uart.py:120`) | **already correct** |
 | X2 | PHY `tx` serial line | `cd_sys` | `cd_b8008` | 2-FF synchronizer inside `usart.vhdl:63-78` | **already correct** |
 | X3 | backpressure stall level | `cd_sys` | `cd_b8008` | 2-FF `MultiReg` | **to be built** |
+| X4 | `ResetSignal("sys")` (reset-ordering term) | `cd_sys` | `cd_b8008` | `AsyncResetSynchronizer` on `cd_b8008`, gated via `b8008_rst_gate` (`soc/versa_soc.py:463-467`) | **already correct** |
+
+*(Corrected 2026-08-08. This clause previously said "exactly three" and omitted X4. Task
+8 legitimately added a fourth crossing: `cd_b8008`'s `AsyncResetSynchronizer` is gated on
+`b8008_rst_gate`, which includes `ResetSignal("sys")` so that `cd_b8008`'s reset cannot
+release before `cd_sys`'s does (`S-RST-6`). It is correctly synchronized and introduces
+no hazard, but its omission left the inventory undercounting the design by one signal
+while `docs/VPLAN.md` row CDC-1 asserted the old three-crossing inventory and read
+`PASS`. Recorded rather than silently edited, for the same reason `S-RST-3`'s correction
+above is.)*
 
 `S-CDC-2` X1 and X2 are single-bit asynchronous serial lines. Metastability
 resolution is the synchronizer's job; framing recovery is the receiver's. Neither
@@ -488,6 +516,13 @@ headroom carries roughly 20× margin.
 `S-BP-7` If the host stops reading, the 8008 stops executing, indefinitely. This is
 correct behavior, not a fault. There is no timeout, no watchdog, and no automatic
 release. Execution resumes when, and only when, the host drains below `LWM`.
+
+While the 8008 is stalled it cannot poll its own UART receive register either, so any
+byte the host transmits during that stall is overwritten inside the core's USART
+regardless of how well the host paces its writes; this route is outside the guarantee
+boundary (`S-PROD-6`) and is not a violation, but it is caused by the product's own
+RX-side stall rather than by host pacing as `U-6` frames it, and a host CLI should stop
+transmitting whenever `console_rx.level` is backing up toward `HWM`.
 
 ### 10.5 Overflow is unreachable
 
@@ -686,7 +721,7 @@ this specification requires a change.
 
 | # | Current RTL | Required by spec |
 |---|---|---|
-| D-1 | `cd_b8008` has no `AsyncResetSynchronizer`; core `i_rst` undriven | `S-RST-4` |
+| D-1 | `cd_b8008`'s auto-attached `AsyncResetSynchronizer` is gated only on `~pll.locked`, omitting POR/`rst_n` and any ordering against `cd_sys` | `S-RST-3`, `S-RST-4` |
 | D-2 | No reset ordering between console logic and core | `S-RST-6` |
 | D-3 | `rxtx` read is a destructive pop | `S-RX-3`, `S-RX-4` |
 | D-4 | `rxlevel` and `rxtx` are separate registers, read separately | `S-RX-8` |

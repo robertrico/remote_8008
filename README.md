@@ -42,26 +42,38 @@ The pin list is specified; whatever you hang off it is not.
 
 ## Status
 
-**Spec-first, pre-hardware.** The bitstream builds and the simulation tiers run, but
-nothing here has executed on real silicon, and the test suites have not been run
-against a board.
+**Spec-first, pre-hardware.** The RTL has been corrected against the spec, the
+simulation tiers run, and the bitstream now builds clean through yosys/nextpnr-ecp5/
+ecppack — but nothing here has executed on real silicon, and the test suites have not
+been run against a board.
 
 [`SPEC.md`](SPEC.md) and [`docs/VPLAN.md`](docs/VPLAN.md) were written **before** the
-RTL was corrected, and they are authoritative over it. The verification plan records
-**12 divergences** where the existing gateware disagrees with the spec — including a
-`cd_b8008` reset that never reaches the core, a console register whose destructive
-read loses a byte whenever a UDP reply is dropped, and an RX FIFO that drops bytes
-silently when full.
+RTL was corrected, and they are authoritative over it. The verification plan recorded
+**12 divergences** where the gateware disagreed with the spec — including a
+`cd_b8008` reset that never reached the core, a console register whose destructive
+read lost a byte whenever a UDP reply was dropped, and an RX FIFO that dropped bytes
+silently when full. **11 of the 12 are now resolved.**
+
+The one still open is **D-12**: `SPEC.md` S-CLK-3 requires `cd_sys` and `cd_b8008` to
+be declared as separate clock groups so the timing tool does not attempt to close
+paths between them. LiteX's `add_false_path_constraints()` is confirmed inert for the
+ECP5/Trellis toolchain — the declaration never reaches the generated `.lpf` or
+nextpnr — and the first real build's post-PnR timing report confirms nextpnr-ecp5
+*does* compute and report critical-path timing across the `cd_sys`/`cd_b8008`
+boundary (e.g. `Critical path report for cross-domain path 'posedge
+$glbnet$etherbone_clk' -> 'posedge $glbnet$b8008_clk'`). There is currently no known
+mechanism on this toolchain to suppress that. See the Task 10 report for the full
+evidence.
 
 None of those are surprises. They are the output of specifying the product properly
 before finishing it.
 
 | | |
 |---|---|
-| Verification rows | 119, all `UNIMPLEMENTED` |
+| Verification rows | 119 total — 31 `PASS`, 88 `UNIMPLEMENTED` |
 | Imported assumptions (core repo, never re-run here) | 11 |
-| Divergences from current RTL | 12 |
-| Rows passing | **0** |
+| Divergences resolved | 11 of 12 — **D-12 outstanding** |
+| Rows passing | **31** |
 
 The b8008 core itself is out of scope and treated as verified: 28 module testbenches,
 an exhaustive ALU check over 656,384 cases, 31 program-level verification scripts,
@@ -88,7 +100,10 @@ never run would be documenting a guess.
 
 The console crosses the clock boundary **as a serial line**, not as parallel data.
 That is deliberate: it reduces the byte path's clock-domain-crossing surface to
-zero, and leaves the whole design with exactly three crossings.
+zero, and leaves the whole design with exactly four crossings — three carrying
+data (the byte path, plus the backpressure stall level) and a fourth, asynchronous
+by construction, that orders `cd_b8008`'s reset release against `cd_sys`'s
+(`SPEC.md` `S-CDC-1`).
 
 | Path | Contents |
 |---|---|
@@ -100,9 +115,13 @@ zero, and leaves the whole design with exactly three crossings.
 | `firmware/` | VexRiscv DHCP/identity firmware — distinct from the 8008 monitor ROM |
 | `host/` | The `b8008net` Python package and its pytest suite |
 
-Note that `host/`'s current commands cover a surface the spec has since retired
-(`load`, `peek`, `poke`, `run`, `step`). They are not deleted yet; they are simply no
-longer part of the product contract.
+`host/` is `make login`: zero-config discovery (cache, then DNS, then a subnet probe
+sweep — see `host/b8008net/discovery.py`) finds the board and drops you straight into
+the monitor's console. Point at a specific board with `make login HOST=10.0.0.5` to
+skip discovery entirely. Press **Ctrl-]** to leave the session and return to your
+shell. There is no bulk-load command in the CLI — pacing a large transfer (e.g.
+feeding an Intel-HEX file to the monitor's own `L` command) is the host's job, because
+the byte-loss guarantee ends at the core's `uart_rx` pin (`SPEC.md` `S-PROD-6`).
 
 ## Provenance
 

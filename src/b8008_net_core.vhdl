@@ -12,8 +12,12 @@
 -- silicon is kept verbatim: the POR counter, the 2 ms auto-start press, the
 -- bootstrap RST 0 jam FSM, and the debug clock controller. The DIP-switch
 -- features (reset, hardware break, READY hold, interrupt trigger/vector) are
--- replaced by the ctl_* ports; the LED muxes and rolling-fetch capture are
--- deleted; the CPU debug pins come straight out on dbg_*.
+-- gone outright -- SPEC.md S-PROD-8 retires host run/stop/step/interrupt
+-- control from the product (D-8), so there is no host-facing replacement
+-- for them; auto-start alone brings the CPU up headless. The LED muxes and
+-- rolling-fetch capture are deleted; the CPU debug pins come straight out
+-- on dbg_*. ext_hold (SPEC.md S-BP-4) is the one control surface that
+-- remains: a synchronized backpressure hold from the console bridge.
 --
 -- CAUTION: debug_clock_control's bootstrap_done port is tied to constant '0'
 -- here. A rising edge on it arms the post-bootstrap hardware break, which
@@ -36,16 +40,18 @@ entity b8008_net_core is
         -- console serial (internal wires to LiteX console bridge)
         uart_tx : out std_logic;
         uart_rx : in  std_logic;
-        -- control pulses: single-cycle, clk domain, already synchronized
-        ctl_run_stop   : in std_logic;
-        ctl_step_cycle : in std_logic;
-        ctl_step_sync  : in std_logic;
-        ctl_int        : in std_logic;   -- one interrupt request
-        ctl_int_vector : in std_logic_vector(2 downto 0);  -- stable level
-        -- status (clk domain; LiteX side synchronizes)
-        sts_is_running : out std_logic;
-        sts_triggered  : out std_logic;
-        sts_tx_busy    : out std_logic;
+        -- SPEC.md S-PROD-8 retires the host-side run/stop/step/interrupt
+        -- controls and the is_running/triggered/tx_busy status outputs from
+        -- the product entirely (D-8, D-9). Fix-round-1 finding: those ports
+        -- used to be dropped only from the Migen Instance() call while
+        -- staying declared here with no VHDL default, which left them
+        -- undriven at the netlist boundary -- a silent hazard for both
+        -- simulation and real hardware. Removed outright instead.
+        --
+        -- Backpressure hold from the sys-domain console bridge, already
+        -- synchronized into this clock domain by a 2-FF MultiReg on the
+        -- Migen side (SPEC.md S-CDC-1 X3). '1' freezes the phase generator.
+        ext_hold       : in std_logic := '0';
         -- external RAM bus (contract: see b8008_top ram_ext_* comment).
         -- Full 14-bit ABSOLUTE 8008 address, passed through unsliced: the
         -- b8008_top default map generics (RAM_BASE=0x1000, RAM_LAST=0x3FFF,
@@ -194,9 +200,8 @@ architecture rtl of b8008_net_core is
     signal reset_sw     : std_logic;
     signal reset_int    : std_logic;
 
-    -- Interrupt request latch (replaces the DIP-switch int_button)
-    signal t1i_ack_sig  : std_logic;
-    signal int_req_latch : std_logic := '0';
+    -- Bootstrap RST-0 jam vector. Host interrupt injection (SPEC.md
+    -- S-PROD-8, D-8) is retired -- this now only ever holds "000".
     signal cpu_int_vec  : std_logic_vector(2 downto 0);
 
     -- CPU signals
@@ -232,18 +237,17 @@ architecture rtl of b8008_net_core is
     signal io_port_read  : std_logic;
     signal io_port_in_data : std_logic_vector(7 downto 0);
 
-    -- UART status
-    signal uart_tx_busy   : std_logic;
-
     -- Clock counter for POR timing
     signal clk_counter : unsigned(25 downto 0) := (others => '0');
 
     -- Debug clock control signals
+    -- is_running/triggered (dbg_is_running/dbg_triggered) and the UART's
+    -- tx_busy no longer have an sts_* output to drive (S-PROD-8/D-9 retire
+    -- host-visible status entirely) -- mapped to `open` at their
+    -- instantiations below instead of kept as dead signals here.
     signal dbg_run_enable   : std_logic;
-    signal dbg_is_running   : std_logic;
     signal dbg_next_is_phi1 : std_logic;
     signal dbg_next_is_phi2 : std_logic;
-    signal dbg_triggered    : std_logic;
     signal dbg_reset_request : std_logic;
 
 begin
@@ -308,26 +312,30 @@ begin
     --------------------------------------------------------------------------------
     -- Debug Clock Control
     --------------------------------------------------------------------------------
-    -- Gates the master clock to the CPU. The three physical buttons become ctl_*
-    -- ports; run/stop is OR'd with the auto-start pulse to boot headless.
+    -- Gates the master clock to the CPU. The three physical buttons were
+    -- host-driven ctl_* ports; S-PROD-8 (D-8) retires host run/stop/step
+    -- control from the product, so run/stop is now driven by auto-start
+    -- alone (still headless-bootable) and step_cycle/step_sync are tied
+    -- permanently inactive. is_running/triggered have no sts_* output left
+    -- to drive (D-9) and are left open.
     -- bootstrap_done is FORCED to '0' - see the CAUTION at the top of the file.
     --------------------------------------------------------------------------------
     u_debug_clk : debug_clock_control
         port map (
             clk_in          => clk,
             reset           => por_active or reset_sw,  -- not dbg_reset_request (feedback loop)
-            btn_run_stop    => ctl_run_stop or auto_start_pulse,
-            btn_step_cycle  => ctl_step_cycle,
-            btn_step_sync   => ctl_step_sync,
+            btn_run_stop    => auto_start_pulse,
+            btn_step_cycle  => '0',
+            btn_step_sync   => '0',
             phi1_in         => phi1,
             phi2_in         => phi2,
             sync_in         => sync_sig,
             bootstrap_done  => '0',                     -- hardware break disabled (headless)
             run_enable      => dbg_run_enable,
-            is_running      => dbg_is_running,
+            is_running      => open,
             next_is_phi1    => dbg_next_is_phi1,
             next_is_phi2    => dbg_next_is_phi2,
-            triggered       => dbg_triggered,
+            triggered       => open,
             reset_request   => dbg_reset_request
         );
 
@@ -365,36 +373,18 @@ begin
     end process;
 
     --------------------------------------------------------------------------------
-    -- Interrupt request: ctl_int = one interrupt, ctl_int_vector = its vector
+    -- Interrupt request: retired (SPEC.md S-PROD-8, D-8)
     --------------------------------------------------------------------------------
-    -- Armed only after bootstrap so a request can never race the RST 0 jam.
-    -- The latch clears on the CPU's T1I acknowledge (status 110, the same decode
-    -- the bootstrap FSM uses).
-    t1i_ack_sig <= '1' when (s2_sig = '1' and s1_sig = '1' and s0_sig = '0') else '0';
-
-    int_latch : process(clk)
-    begin
-        if rising_edge(clk) then
-            if reset_int = '1' or bootstrap_done = '0' then
-                int_req_latch <= '0';
-            elsif ctl_int = '1' then
-                int_req_latch <= '1';
-            elsif t1i_ack_sig = '1' then
-                int_req_latch <= '0';
-            end if;
-        end if;
-    end process;
-
-    -- Latch the jam vector at REQUEST time. A combinational mux on bootstrap_done
-    -- raced the bootstrap's own T1I; the latch only moves while a request is
-    -- pending, so it is stable through every T1I.
+    -- Host interrupt injection (formerly ctl_int / ctl_int_vector) no longer
+    -- exists as a product surface. What remains is only the bootstrap RST 0
+    -- jam: cpu_int_vec holds "000" for as long as bootstrap_done = '0' (or
+    -- under reset) and is never written afterward, so it is permanently
+    -- "000" once latched -- there is no other write path left.
     vec_latch : process(clk)
     begin
         if rising_edge(clk) then
             if reset_int = '1' or bootstrap_done = '0' then
                 cpu_int_vec <= "000";              -- bootstrap jams RST 0
-            elsif int_req_latch = '1' then
-                cpu_int_vec <= ctl_int_vector;     -- freeze the request vector
             end if;
         end if;
     end process;
@@ -414,9 +404,11 @@ begin
         port map (
             clk_in      => clk,
             reset       => reset_int,
-            run_enable  => dbg_run_enable,        -- Debug hold: '0' freezes phi state machine
-            interrupt   => bootstrap_int or int_req_latch,
-            int_vector  => cpu_int_vec,           -- RST 0 for bootstrap, ctl pick after
+            -- Debug hold OR host backpressure: '0' freezes the phi state
+            -- machine. SPEC.md S-BP-4 -- a hold, never a gated clock.
+            run_enable  => (dbg_run_enable and not ext_hold),
+            interrupt   => bootstrap_int,         -- only source left: the boot RST 0 jam
+            int_vector  => cpu_int_vec,           -- always "000" -- see vec_latch above
             ready_in    => '1',                   -- READY hold removed; always ready
             phi1_out    => phi1,
             phi2_out    => phi2,
@@ -491,17 +483,10 @@ begin
             io_port_num  => io_port_num,
             io_port_out  => io_port_out,
             rx_port_data => io_port_in_data,  -- Directly wired to CPU input
-            tx_busy      => uart_tx_busy,
+            tx_busy      => open,             -- no sts_tx_busy left to drive (D-9)
             uart_tx      => uart_tx,
             uart_rx      => uart_rx
         );
-
-    --------------------------------------------------------------------------------
-    -- Status (clk domain; LiteX side synchronizes)
-    --------------------------------------------------------------------------------
-    sts_is_running <= dbg_is_running;
-    sts_triggered  <= dbg_triggered;
-    sts_tx_busy    <= uart_tx_busy;
 
     --------------------------------------------------------------------------------
     -- CPU Debug Outputs (straight to pads at SoC level, for a logic analyzer)

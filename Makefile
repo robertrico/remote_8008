@@ -299,3 +299,19 @@ check-synth:
 	 echo "expect >= 12 DP16KD (16KB RAM=8, ROM 4KB=2..4, + SoC)"; \
 	 echo "=== Trellis packing / FF / fmax (see litex.log & *.rpt) ==="; \
 	 grep -iE "TRELLIS_FF|Max frequency|DP16KD|LUT4" $(VERSA_DIR)/gateware/*.rpt 2>/dev/null | tail -40
+
+.PHONY: vplan
+vplan:
+	$(PY) -m pytest soc/tests soc/test_integration.py -v
+
+# ============================================================================
+# login: zero-config console client
+# ============================================================================
+# `make login` discovers the board (cache -> DNS -> subnet probe sweep, see
+# host/b8008net/discovery.py) and drops you into the 8008 monitor's console
+# (Ctrl-] to exit). `make login HOST=10.0.0.5` skips discovery and connects
+# directly. This is the deliverable make-login-console-client exists for.
+# ============================================================================
+.PHONY: login
+login:
+	$(PY) -m b8008net.cli login $(if $(HOST),--host $(HOST),)
