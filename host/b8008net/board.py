@@ -13,7 +13,10 @@ from . import discovery
 DEFAULT_LOCK_PATH = os.path.expanduser("~/.b8008net.lock")
 LITEX_SERVER_HOST = "localhost"
 LITEX_SERVER_PORT = 1234
-SERVER_STARTUP_TIMEOUT_S = 5.0
+# 15 s, not 5: the bridge probes the board over broadcast (3 tries x its
+# socket timeout) before opening its TCP front, and a board mid-DHCP can
+# legitimately take that long to answer the first probe.
+SERVER_STARTUP_TIMEOUT_S = 15.0
 SERVER_SHUTDOWN_TIMEOUT_S = 3.0
 
 

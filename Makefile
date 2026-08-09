@@ -377,6 +377,19 @@ test: test-c
 	$(PY) -m pytest soc/tests soc/test_integration.py -q
 
 # ============================================================================
+# selftest: hardware-in-the-loop (board must be powered, leased, serving)
+# ============================================================================
+# Zero-config: discovers the board (broadcast probe first), spawns the
+# b8008net broadcast bridge, then runs the five checks in host_selftest.py --
+# identifier, console banner, monitor 'H' round-trip, scratch write/readback,
+# 255-word burst read. VPLAN §6 HW rows + SWEB-on-silicon.
+# ============================================================================
+.PHONY: selftest
+selftest:
+	@$(PY) -c 'import b8008net' 2>/dev/null || $(PY) -m pip install -e host
+	$(PY) soc/host_selftest.py --csr $(VERSA_DIR)/csr.csv $(if $(HOST),--host $(HOST),)
+
+# ============================================================================
 # login: zero-config console client
 # ============================================================================
 # `make login` discovers the board (cache -> DNS -> subnet probe sweep, see

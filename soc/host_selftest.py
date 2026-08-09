@@ -190,6 +190,32 @@ def run_checks(client):
         print(f"[3] command 'H' -> got {decode_printable(resp)!r}  FAIL")
         failures += 1
 
+    # 4: CSR write/readback through the software Etherbone server (VPLAN
+    # SWEB rows exercised on silicon; scratch is the designated safe target).
+    ok = True
+    for pattern in (0xA5A5A5A5, 0x5A5A5A5A, 0x8008BEEF):
+        client.regs.ctrl_scratch.write(pattern)
+        got = client.regs.ctrl_scratch.read()
+        if got != pattern:
+            print(f"[4] scratch write {pattern:#x} read back {got:#x}  FAIL")
+            failures += 1
+            ok = False
+            break
+    if ok:
+        print("[4] scratch write/readback x3  PASS")
+
+    # 5: 255-word burst read (WIRE-2 heritage: the full-depth burst the
+    # transport must carry in one request). CSR reads are side-effect-free
+    # (S-CSR-3: pops happen on write, never read), so reading a 255-word
+    # window of CSR space is safe.
+    base = client.regs.ctrl_scratch.addr
+    burst = client.read(base, 255)
+    if len(burst) == 255 and burst[0] == 0x8008BEEF:
+        print("[5] 255-word burst read  PASS")
+    else:
+        print(f"[5] 255-word burst read: len={len(burst)} first={burst[0]:#x}  FAIL")
+        failures += 1
+
     return failures
 
 
@@ -197,22 +223,36 @@ def main():
     parser = argparse.ArgumentParser(
         description="RemoteClient self-test for the b8008_net SoC (Etherbone).")
     parser.add_argument("--csr",  required=True, help="Path to the SoC csr.csv.")
-    parser.add_argument("--host", default="localhost",
-                        help="litex_server host (default: localhost).")
+    parser.add_argument("--host", default=None,
+                        help="Board address. Default: zero-config -- discover "
+                             "the board and spawn the b8008net broadcast "
+                             "bridge automatically (`make selftest`).")
     parser.add_argument("--port", default=1234, type=int,
                         help="litex_server port (default: 1234).")
+    parser.add_argument("--server", default=None,
+                        help="Connect to an already-running bridge at this "
+                             "host instead of discovering the board.")
     args = parser.parse_args()
 
     # Import lazily so the pure helpers above (and py_compile) do not require a
     # litex install; the FakeBoard unit tests in Task 10 exercise those directly.
-    from litex.tools.litex_client import RemoteClient
-
-    client = RemoteClient(host=args.host, port=args.port, csr_csv=args.csr)
-    client.open()
+    if args.server is not None:
+        from litex.tools.litex_client import RemoteClient
+        client = RemoteClient(host=args.server, port=args.port, csr_csv=args.csr)
+        client.open()
+        board = None
+    else:
+        from b8008net.board import Board
+        board = Board.connect(args.csr, host=args.host)
+        client = board.client
+        print(f"[0] discovered + connected: {board.host}")
     try:
         failures = run_checks(client)
     finally:
-        client.close()
+        if board is not None:
+            board.close()
+        else:
+            client.close()
 
     if failures:
         print(f"host_selftest: {failures} check(s) FAILED")
