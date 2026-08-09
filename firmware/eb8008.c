@@ -30,6 +30,24 @@
 #define EB_PF 0x01
 #define EB_PR 0x02
 
+// Bus access indirection: on the target these collapse to raw pointer
+// dereferences; the host unit-test harness (test_eb8008_host.c, built with
+// -DEB8008_HOST_TEST) supplies its own model instead -- host pointers are
+// 64-bit, so a uint32_t wire address cannot reach real host memory.
+#ifdef EB8008_HOST_TEST
+uint32_t eb8008_bus_read(uint32_t addr);
+void     eb8008_bus_write(uint32_t addr, uint32_t val);
+#else
+static inline uint32_t eb8008_bus_read(uint32_t addr)
+{
+    return *(volatile uint32_t *)(uintptr_t)addr;
+}
+static inline void eb8008_bus_write(uint32_t addr, uint32_t val)
+{
+    *(volatile uint32_t *)(uintptr_t)addr = val;
+}
+#endif
+
 static uint32_t get_be32(const uint8_t *p)
 {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
@@ -78,7 +96,7 @@ int eb8008_handle(const uint8_t *req, int req_len, uint8_t *resp)
             uint32_t addr = get_be32(p);
             p += 4;
             for (int i = 0; i < wcount; i++) {
-                *(volatile uint32_t *)(uintptr_t)(addr + 4 * i) = get_be32(p);
+                eb8008_bus_write(addr + 4 * i, get_be32(p));
                 p += 4;
             }
         }
@@ -104,8 +122,7 @@ int eb8008_handle(const uint8_t *req, int req_len, uint8_t *resp)
             for (int i = 0; i < rcount; i++) {
                 uint32_t addr = get_be32(p);
                 p += 4;
-                put_be32(resp + resp_len,
-                         *(volatile uint32_t *)(uintptr_t)addr);
+                put_be32(resp + resp_len, eb8008_bus_read(addr));
                 resp_len += 4;
             }
         }

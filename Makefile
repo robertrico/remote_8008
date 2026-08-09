@@ -171,36 +171,11 @@ sim-netlist: $(NETLIST_V)
 	    $(NETLIST_V) $(GHDL_GATES) $(MODELS_V) $(NETLIST_TB)
 	./obj_dir/netlist_tb
 
-# ============================================================================
-# sim-bench: pre-hardware gate -- Verilator C++ bench around B8008Core
-# ============================================================================
-# The macOS-runnable pre-hardware gate (no TAP -> no simulated Ethernet).
-# bench_core.py emits build/bench_core.v: B8008Core with its CSR bus and
-# wishbone bus (and both clock domains + resets) exposed as ports, materialised
-# via csr_bus.CSRBankArray + Interconnect. sim/bench_tb.cpp drives those buses
-# directly to prove the wishbone RAM window, the console-bridge CSR FIFOs, the
-# control-CSR CDC, and stop->restart semantics against the real converted
-# netlist -- exactly the custom logic; LiteEth/Etherbone transport is stock
-# upstream, first exercised on hardware in Task 13.
-#
-# bench_core.py runs from build/ so bench_core.v and its $readmemh rom.init land
-# together; the Verilator binary is therefore run from build/ too. --cc --exe
-# --build compiles the C++ driver (which supplies main()) into obj_bench/.
-# ============================================================================
-BENCH_V      := build/bench_core.v
-BENCH_TB     := sim/bench_tb.cpp
-BENCH_MDIR   := build/obj_bench
-
-.PHONY: sim-bench
-sim-bench: $(NETLIST_V)
-	$(PY) soc/bench_core.py
-	$(VERILATOR) --cc --exe --build -Wno-fatal \
-	    --top-module bench_core \
-	    --Mdir $(BENCH_MDIR) \
-	    -o bench_tb \
-	    $(CURDIR)/$(BENCH_V) $(GHDL_GATES) $(NETLIST_V) \
-	    $(CURDIR)/$(BENCH_TB)
-	cd build && ./obj_bench/bench_tb
+# (sim-bench retired: bench_core.py drove B8008Core.bus_ram and ctl.run_stop,
+# both removed by D-10/S-PROD-8 -- test_structural.py asserts bus_ram is gone,
+# so the bench could no longer even elaborate. Console-bridge CSR coverage
+# lives in soc/tests/; transport coverage in the host/firmware unit tests and
+# the hardware selftest.)
 
 VERSA_DIR    := build/versa
 VERSA_BIT    := $(VERSA_DIR)/gateware/versa_soc.bit
@@ -325,6 +300,60 @@ check-synth:
 .PHONY: vplan
 vplan:
 	$(PY) -m pytest soc/tests soc/test_integration.py -v
+
+# ============================================================================
+# test: the full software-side verification suite (hermetic, no hardware)
+# ============================================================================
+# - vplan     : VPLAN conformance rows (soc/tests) + integration smoke
+# - host      : b8008net package suite (hermetic -- conftest.py blocks any
+#               non-loopback sendto, so it can never touch the bench LAN)
+# - test-c    : host-compiled firmware C unit tests (wire formats and pure
+#               protocol logic, run natively -- no cross toolchain needed)
+# Hardware-in-the-loop checks live in `make selftest` (board required).
+# ============================================================================
+HOSTCC       ?= cc
+C_TEST_DIR   := build/ctest
+
+.PHONY: test-c
+test-c:
+	@mkdir -p $(C_TEST_DIR)
+	$(HOSTCC) -Wall -Wextra -o $(C_TEST_DIR)/test_dhcp firmware/dhcp8008.c firmware/test_dhcp_host.c
+	$(C_TEST_DIR)/test_dhcp
+	$(HOSTCC) -Wall -Wextra -DEB8008_HOST_TEST -o $(C_TEST_DIR)/test_eb8008 firmware/eb8008.c firmware/test_eb8008_host.c
+	$(C_TEST_DIR)/test_eb8008
+
+# ============================================================================
+# coverage-c: line coverage on the host-testable firmware C, 100% enforced
+# ============================================================================
+# Only files with a host harness are gated (eb8008.c, dhcp8008.c). udp.c and
+# main.c join as their harnesses land. The gate greps gcov's per-file summary
+# and fails on anything below 100.00% -- uncovered lines in wire-format code
+# are exactly where the next protocol bug hides.
+# ============================================================================
+.PHONY: coverage-c
+coverage-c:
+	@mkdir -p $(C_TEST_DIR)/cov && rm -f $(C_TEST_DIR)/cov/*
+	cd $(C_TEST_DIR)/cov && \
+	  $(HOSTCC) --coverage -DEB8008_HOST_TEST -o test_eb8008 \
+	    $(CURDIR)/firmware/eb8008.c $(CURDIR)/firmware/test_eb8008_host.c && \
+	  ./test_eb8008 > /dev/null && \
+	  $(HOSTCC) --coverage -o test_dhcp \
+	    $(CURDIR)/firmware/dhcp8008.c $(CURDIR)/firmware/test_dhcp_host.c && \
+	  ./test_dhcp > /dev/null && \
+	  xcrun llvm-cov gcov test_eb8008-eb8008.gcda test_dhcp-dhcp8008.gcda 2>/dev/null | \
+	    grep -A1 "File.*firmware/" | grep -v test_ > coverage.txt && \
+	  cat coverage.txt && \
+	  grep -q "eb8008.c" coverage.txt && \
+	  grep -q "dhcp8008.c" coverage.txt && \
+	  ! grep "Lines executed" coverage.txt | grep -v "100.00%"
+
+# Two pytest invocations, not one: soc/tests modules import their fixtures
+# via `from conftest import ...`, which mis-resolves to host/tests/conftest.py
+# when both suites share a single pytest process.
+.PHONY: test
+test: test-c
+	$(PY) -m pytest host/tests -q
+	$(PY) -m pytest soc/tests soc/test_integration.py -q
 
 # ============================================================================
 # login: zero-config console client

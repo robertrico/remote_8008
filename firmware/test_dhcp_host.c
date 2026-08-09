@@ -243,12 +243,69 @@ static void test_parse_ack(void)
     printf("test_parse_ack: PASS\n");
 }
 
+// Adversarial parser inputs: each case targets a distinct early-out or
+// option-scan edge in parse_reply that the happy-path tests never reach.
+static void test_parse_malformed(void)
+{
+    uint8_t buf[DHCP_MIN_PACKET_LEN];
+    int len, msg_type_off;
+    uint32_t xid = 0x5eed5eed;
+    uint32_t ip, server, lease;
+
+    // Not a BOOTREPLY (op = BOOTREQUEST).
+    build_canned_offer(buf, &len, xid, NULL);
+    buf[0] = 1;
+    assert(!dhcp_parse_offer(buf, len, xid, &ip, &server, &lease));
+
+    // Corrupt magic cookie.
+    build_canned_offer(buf, &len, xid, NULL);
+    buf[236] ^= 0xff;
+    assert(!dhcp_parse_offer(buf, len, xid, &ip, &server, &lease));
+
+    // PAD option before the real options must be skipped, not parsed as TLV.
+    build_canned_offer(buf, &len, xid, &msg_type_off);
+    memmove(buf + DHCP_OPTIONS_OFFSET + 1, buf + DHCP_OPTIONS_OFFSET,
+            (size_t)(len - DHCP_OPTIONS_OFFSET));
+    buf[DHCP_OPTIONS_OFFSET] = 0; // OPT_PAD as the very first option byte
+    len += 1;
+    assert(dhcp_parse_offer(buf, len, xid, &ip, &server, &lease));
+
+    // Unknown option code must be skipped via the default branch.
+    build_canned_offer(buf, &len, xid, NULL);
+    // insert a bogus TLV (code 99, len 1) as the very first option
+    memmove(buf + DHCP_OPTIONS_OFFSET + 3, buf + DHCP_OPTIONS_OFFSET,
+            (size_t)(len - DHCP_OPTIONS_OFFSET));
+    buf[DHCP_OPTIONS_OFFSET]     = 99;
+    buf[DHCP_OPTIONS_OFFSET + 1] = 1;
+    buf[DHCP_OPTIONS_OFFSET + 2] = 0xAA;
+    len += 3;
+    assert(dhcp_parse_offer(buf, len, xid, &ip, &server, &lease));
+
+    // Option code as the very last byte: TLV truncated before its length
+    // byte. The scan must stop cleanly (no out-of-bounds read); the reply
+    // still parses because every required option was already seen.
+    build_canned_offer(buf, &len, xid, NULL);
+    buf[len - 1] = 53; // replace END with a dangling option code
+    assert(dhcp_parse_offer(buf, len, xid, &ip, &server, &lease));
+
+    // Option length promising more bytes than the packet holds: same deal --
+    // scan stops at the truncated value without reading past the buffer.
+    build_canned_offer(buf, &len, xid, NULL);
+    buf[len - 1] = 51;      // dangling lease-time option...
+    buf[len] = 4;           // ...whose length claims 4 bytes that don't exist
+    len += 1;
+    assert(dhcp_parse_offer(buf, len, xid, &ip, &server, &lease));
+
+    printf("test_parse_malformed: PASS\n");
+}
+
 int main(void)
 {
     test_discover();
     test_request();
     test_parse_offer();
     test_parse_ack();
+    test_parse_malformed();
     printf("ALL PASS\n");
     return 0;
 }
