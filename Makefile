@@ -321,14 +321,23 @@ test-c:
 	$(C_TEST_DIR)/test_dhcp
 	$(HOSTCC) -Wall -Wextra -DEB8008_HOST_TEST -o $(C_TEST_DIR)/test_eb8008 firmware/eb8008.c firmware/test_eb8008_host.c
 	$(C_TEST_DIR)/test_eb8008
+	$(HOSTCC) -Wall -Ifirmware/hostmocks -Ilitex/litex/soc/software -DETH_UDP_BROADCAST \
+	    -o $(C_TEST_DIR)/test_udp firmware/udp.c firmware/test_udp_host.c
+	$(C_TEST_DIR)/test_udp
+	$(HOSTCC) -Wall -Ifirmware/hostmocks -Ilitex/litex/soc/software -Ifirmware \
+	    -DETH_UDP_BROADCAST -DEB8008_HOST_TEST \
+	    -o $(C_TEST_DIR)/test_eb_serve firmware/udp.c firmware/eb8008.c firmware/eb_serve.c firmware/test_eb_serve_host.c
+	$(C_TEST_DIR)/test_eb_serve
 
 # ============================================================================
 # coverage-c: line coverage on the host-testable firmware C, 100% enforced
 # ============================================================================
-# Only files with a host harness are gated (eb8008.c, dhcp8008.c). udp.c and
-# main.c join as their harnesses land. The gate greps gcov's per-file summary
-# and fails on anything below 100.00% -- uncovered lines in wire-format code
-# are exactly where the next protocol bug hides.
+# Gated at 100.00% lines: eb8008.c, dhcp8008.c, udp.c (fork), eb_serve.c.
+# main.c is the remaining un-harnessed file (boot + DHCP policy loop; its
+# serve glue was extracted into eb_serve.c exactly so it could be gated).
+# The gate greps gcov's per-file summary and fails on anything below 100.00%
+# -- uncovered lines in wire-format code are exactly where the next protocol
+# bug hides.
 # ============================================================================
 .PHONY: coverage-c
 coverage-c:
@@ -340,11 +349,23 @@ coverage-c:
 	  $(HOSTCC) --coverage -o test_dhcp \
 	    $(CURDIR)/firmware/dhcp8008.c $(CURDIR)/firmware/test_dhcp_host.c && \
 	  ./test_dhcp > /dev/null && \
-	  xcrun llvm-cov gcov test_eb8008-eb8008.gcda test_dhcp-dhcp8008.gcda 2>/dev/null | \
+	  $(HOSTCC) --coverage -I$(CURDIR)/firmware/hostmocks -I$(CURDIR)/litex/litex/soc/software \
+	    -DETH_UDP_BROADCAST -o test_udp \
+	    $(CURDIR)/firmware/udp.c $(CURDIR)/firmware/test_udp_host.c && \
+	  ./test_udp > /dev/null && \
+	  $(HOSTCC) --coverage -I$(CURDIR)/firmware/hostmocks -I$(CURDIR)/litex/litex/soc/software \
+	    -I$(CURDIR)/firmware -DETH_UDP_BROADCAST -DEB8008_HOST_TEST -o test_eb_serve \
+	    $(CURDIR)/firmware/udp.c $(CURDIR)/firmware/eb8008.c $(CURDIR)/firmware/eb_serve.c \
+	    $(CURDIR)/firmware/test_eb_serve_host.c && \
+	  ./test_eb_serve > /dev/null && \
+	  xcrun llvm-cov gcov test_eb8008-eb8008.gcda test_dhcp-dhcp8008.gcda \
+	    test_udp-udp.gcda test_eb_serve-eb_serve.gcda 2>/dev/null | \
 	    grep -A1 "File.*firmware/" | grep -v test_ > coverage.txt && \
 	  cat coverage.txt && \
 	  grep -q "eb8008.c" coverage.txt && \
 	  grep -q "dhcp8008.c" coverage.txt && \
+	  grep -q "/udp.c" coverage.txt && \
+	  grep -q "eb_serve.c" coverage.txt && \
 	  ! grep "Lines executed" coverage.txt | grep -v "100.00%"
 
 # Two pytest invocations, not one: soc/tests modules import their fixtures

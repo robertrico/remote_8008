@@ -26,7 +26,7 @@
 #include <libliteeth/mdio.h>
 
 #include "dhcp8008.h"
-#include "eb8008.h"
+#include "eb_serve.h"
 
 // The Etherbone core's identity (see caveat 1 in dhcp8008.c): this is what
 // goes in the DHCP chaddr/client-id fields, and it's the address the leased
@@ -64,21 +64,6 @@ static volatile int rx_got;
 static uint8_t rx_msgbuf[DHCP_MIN_PACKET_LEN + 64];
 static int rx_msglen;
 
-// ── software Etherbone server state ─────────────────────────────────────────
-// One request in flight at a time -- litex's CommUDP is strictly
-// request/response, and the callback context can't ARP-resolve (that would
-// nest udp_service), so the callback just stashes the request and the main
-// serve loop replies.
-#define EB_BUF_LEN 1500
-static volatile int eb_pending;
-static uint32_t eb_src_ip;
-static uint16_t eb_src_port;
-static uint16_t eb_dst_port;
-static uint8_t  eb_src_mac[6];
-static uint8_t  eb_req[EB_BUF_LEN];
-static int      eb_req_len;
-static uint8_t  eb_resp[EB_BUF_LEN + 16];
-
 static void dhcp_rx_callback(uint32_t src_ip, uint16_t src_port,
                               uint16_t dst_port, void *data, uint32_t length)
 {
@@ -92,66 +77,11 @@ static void dhcp_rx_callback(uint32_t src_ip, uint16_t src_port,
     rx_got = 1;
 }
 
-static volatile uint32_t eb_cb_any, eb_cb_port, eb_served, eb_resolve_fail;
-
 // Bring-up counters + gratuitous-ARP announce from the local udp.c fork.
 extern uint32_t dbg_rx_frames, dbg_rx_arp, dbg_rx_ip, dbg_rx_short;
 extern uint32_t dbg_ip_tome, dbg_ip_bcast, dbg_ip_other;
 void udp_announce_arp(void);
 int udp_arp_refresh(uint32_t ip);
-void udp_set_peer(uint32_t ip, const uint8_t *mac);
-extern uint8_t udp_last_src_mac[6];
-
-static void eb_rx_callback(uint32_t src_ip, uint16_t src_port,
-                            uint16_t dst_port, void *data, uint32_t length)
-{
-    eb_cb_any++;
-    // No dst_port filter: mesh routers can rewrite ports in transit, so the
-    // Etherbone magic check below is the real gate.
-    if (eb_pending)
-        return;
-    if (length >= 2 && (((const uint8_t *)data)[0] != 0x4e ||
-                        ((const uint8_t *)data)[1] != 0x6f))
-        return; // not Etherbone
-    eb_cb_port++;
-    eb_dst_port = dst_port;
-    memcpy(eb_src_mac, (const void *)udp_last_src_mac, 6);
-    if (length > sizeof(eb_req))
-        return;
-    memcpy(eb_req, data, length);
-    eb_req_len  = (int)length;
-    eb_src_ip   = src_ip;
-    eb_src_port = src_port;
-    eb_pending  = 1;
-}
-
-// Reply to the stashed Etherbone request (main-loop context: ARP resolve of
-// the requester is safe here). The single-entry ARP cache in libliteeth's
-// udp.c persists across requests, so the resolve only round-trips when the
-// requester changes.
-static void eb_serve_pending(void)
-{
-    static uint32_t eb_resolved_ip;
-
-    if (!eb_pending)
-        return;
-
-    int resp_len = eb8008_handle(eb_req, eb_req_len, eb_resp);
-    if (resp_len) {
-        // Unicast the reply straight to the requester's captured MAC/IP.
-        // No ARP resolve: that round-trip would depend on the client->board
-        // unicast direction, which the mesh drops. Board->client unicast is
-        // the proven-good direction.
-        (void)eb_resolved_ip;
-        udp_set_peer(eb_src_ip, eb_src_mac);
-        memcpy(udp_get_tx_buffer(), eb_resp, (size_t)resp_len);
-        // Mirror the ports the request arrived with -- a NATing mesh maps
-        // the reply back to the client only if they match.
-        udp_send(eb_dst_port, eb_src_port, (uint32_t)resp_len);
-        eb_served++;
-    }
-    eb_pending = 0;
-}
 
 // Total frames seen at the MAC's RX slot interface (approximate: sampled as
 // writer ev_pending just before udp_service consumes it). Distinguishes

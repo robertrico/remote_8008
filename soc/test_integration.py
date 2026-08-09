@@ -55,3 +55,83 @@ def test_rom_init_loader():
 
     words = load_mem_file(_ROM_MEM)
     assert len(words) == 4096 and all(0 <= w < 256 for w in words)
+
+
+# ── BaseSoC ethernet-branch elaboration ────────────────────────────────────────
+# The SoC grew three mutually exclusive ethernet configurations during
+# bring-up (--ethmac-only production, --stock-hybrid and the hybrid default
+# preserved for the hybrid deep-dive) plus --debug-uart and --eb-static-ip.
+# None had elaboration coverage -- the ethmac-only branch shipped with an
+# early `return` that silently skipped the b8008 core until caught on
+# hardware. Each test elaborates through versa_soc.py's own CLI in a
+# subprocess (exactly the production invocation, sidestepping the repo-root
+# litex/ import shadow) with both compiles disabled, then asserts on the
+# generated csr.csv.
+
+import subprocess
+import sys
+
+_REPO = os.path.join(_HERE, "..")
+
+
+def _elaborate(tmp_path, *flags):
+    out = os.path.join(str(tmp_path), "out")
+    subprocess.check_call(
+        [sys.executable, "soc/versa_soc.py", "--build",
+         "--output-dir", out, "--csr-csv", os.path.join(out, "csr.csv"),
+         "--sys-clk-freq", "60e6",
+         "--no-compile-gateware", "--no-compile-software",
+         *flags],
+        cwd=_REPO, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    with open(os.path.join(out, "csr.csv")) as f:
+        return f.read()
+
+
+_needs_netlist = pytest.mark.skipif(
+    not os.path.exists(_CORE_V),
+    reason="build/b8008_net_core.v missing -- run `make convert` first",
+)
+
+
+@_needs_netlist
+def test_soc_ethmac_only_elaborates_with_b8008_core(tmp_path):
+    csr = _elaborate(tmp_path, "--ethmac-only", "--debug-uart")
+    assert "csr_base,ethmac," in csr
+    assert "csr_base,b8008," in csr, "ethmac-only must still integrate the 8008 core"
+    assert "etherbone" not in csr, "no hardware etherbone in the production build"
+    assert "csr_register,uart_rxtx" in csr, "--debug-uart must instantiate a real UART"
+
+
+@_needs_netlist
+def test_soc_hybrid_default_elaborates(tmp_path):
+    csr = _elaborate(tmp_path)
+    assert "csr_base,b8008," in csr
+    assert "csr_base,ethmac," in csr  # hybrid exposes the CPU MAC too
+
+
+@_needs_netlist
+def test_soc_eb_static_ip_elaborates(tmp_path):
+    _elaborate(tmp_path, "--eb-static-ip", "192.168.1.222")
+
+
+def test_soc_stock_hybrid_elaborates(tmp_path):
+    # stock-hybrid early-returns before the b8008 core by design (bisect
+    # bitstream) -- no netlist needed
+    _elaborate(tmp_path, "--stock-hybrid")
+
+
+def test_makefile_pins_production_soc_flags():
+    """The shipped build must be ethmac-only at 60 MHz with the bring-up
+    console. SOC_FLAGS is ?=-overridable; this pins the default."""
+    import re
+    with open(os.path.join(_HERE, "..", "Makefile")) as f:
+        mk = f.read()
+    m = re.search(r"^SOC_FLAGS \?= (.+)$", mk, re.M)
+    assert m, "SOC_FLAGS default missing from Makefile"
+    flags = m.group(1)
+    assert "--ethmac-only" in flags
+    assert "--debug-uart" in flags
+    assert "--sys-clk-freq $(SYS_CLK_FREQ)" in flags
+    m2 = re.search(r"^SYS_CLK_FREQ \?= (.+)$", mk, re.M)
+    assert m2 and m2.group(1).strip() == "60e6"

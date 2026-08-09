@@ -215,3 +215,93 @@ def test_lock_excludes(tmp_path):
     # Once released, a fresh acquire succeeds again.
     reacquired = acquire_lock(str(lock_path))
     reacquired.release()
+
+
+# ── probe_broadcast() and discover()'s broadcast-first order ─────────────
+# VPLAN: SWEB-14. The broadcast probe is the one client->board direction
+# mesh WiFi reliably delivers, so discover() must try it before DNS and the
+# unicast sweep, cache its answer, and fall through cleanly when it fails.
+
+def test_discover_broadcast_first_short_circuits_dns_and_sweep(tmp_path, monkeypatch):
+    cache_path = tmp_path / "b8008net_host"
+    order = []
+
+    monkeypatch.setattr(discovery, "probe_broadcast",
+                        lambda: (order.append("bcast"), "192.168.7.45")[1])
+    monkeypatch.setattr(discovery, "resolve_dns",
+                        lambda names=discovery.DNS_NAMES: (order.append("dns"), None)[1])
+    monkeypatch.setattr(discovery, "probe_sweep",
+                        lambda *a, **k: (order.append("sweep"), None)[1])
+
+    found = discover(cache_path=str(cache_path), use_cache=False)
+    assert found == "192.168.7.45"
+    assert order == ["bcast"]                       # nothing after the hit
+    assert load_cache(str(cache_path)) == "192.168.7.45"  # answer cached
+
+
+def test_discover_falls_through_bcast_dns_sweep_in_order(tmp_path, monkeypatch):
+    cache_path = tmp_path / "b8008net_host"
+    order = []
+
+    monkeypatch.setattr(discovery, "probe_broadcast",
+                        lambda: (order.append("bcast"), None)[1])
+    monkeypatch.setattr(discovery, "resolve_dns",
+                        lambda names=discovery.DNS_NAMES: (order.append("dns"), None)[1])
+    monkeypatch.setattr(discovery, "probe_sweep",
+                        lambda *a, **k: (order.append("sweep"), "192.168.7.60")[1])
+    monkeypatch.setattr(discovery, "local_ipv4_and_netmask",
+                        lambda: ("192.168.7.2", "255.255.255.0"))
+
+    found = discover(cache_path=str(cache_path), use_cache=False)
+    assert found == "192.168.7.60"
+    assert order == ["bcast", "dns", "sweep"]
+
+
+def test_probe_broadcast_sends_subnet_and_limited_broadcast(monkeypatch):
+    sent = []
+
+    class FakeSock:
+        def sendto(self, data, addr):
+            sent.append(addr)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(discovery, "local_ipv4_and_netmask",
+                        lambda: ("192.168.7.2", "255.255.255.0"))
+    # select never reports readable -> probe returns None after sending
+    monkeypatch.setattr(discovery.select, "select", lambda r, w, x, t: ([], [], []))
+
+    found = discovery.probe_broadcast(timeout=0.05, sock=FakeSock())
+    assert found is None
+    assert ("192.168.7.255", discovery.ETHERBONE_PORT) in sent
+    assert ("255.255.255.255", discovery.ETHERBONE_PORT) in sent
+    assert sent.index(("192.168.7.255", discovery.ETHERBONE_PORT)) == 0  # subnet form first
+
+
+def test_probe_broadcast_accepts_valid_reply_and_returns_sender(monkeypatch):
+    from litex.tools.remote.etherbone import EtherbonePacket
+
+    reply = EtherbonePacket()
+    reply.pr = 1
+    reply.encode()
+
+    class FakeSock:
+        def __init__(self):
+            self.fed = False
+
+        def sendto(self, data, addr):
+            pass
+
+        def recvfrom(self, _n):
+            self.fed = True
+            return bytes(reply.bytes), ("192.168.7.45", 1234)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(discovery, "local_ipv4_and_netmask",
+                        lambda: ("192.168.7.2", "255.255.255.0"))
+    monkeypatch.setattr(discovery.select, "select", lambda r, w, x, t: ([r[0]], [], []))
+
+    assert discovery.probe_broadcast(timeout=0.5, sock=FakeSock()) == "192.168.7.45"

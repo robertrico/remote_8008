@@ -1,7 +1,9 @@
 # remote_8008 — Verification Plan
 
-**Status:** Phases 1–4 complete. 31 of 119 verification rows `PASS`; the rest are
-`UNIMPLEMENTED`. The 11 imported assumptions are `IMPORTED` and are never run here.
+**Status:** Phases 1–4 complete. 44 of 133 verification rows `PASS`; the rest are
+`UNIMPLEMENTED`. (2026-08-09: §2.8b added 14 `SWEB` rows for the software
+Etherbone transport that replaced the hardware endpoint -- 13 already `PASS`
+via the new `CTEST`/`PYTEST` tiers, SWEB-12 is `HW`; WIRE-1 `SUPERSEDED`.) The 11 imported assumptions are `IMPORTED` and are never run here.
 Task 10 ran the first real bitstream build (yosys/nextpnr-ecp5/ecppack); it
 succeeded, but D-12 (`CLK-3`/`CLK-4`) remains open — see `SPEC.md` divergence
 D-12 and the Task 10 report for the empirical finding. A final review pass
@@ -221,14 +223,14 @@ loop in `firmware/main.c`, and the host bridge `b8008net/eb_server.py`.
 | SWEB-4 | S-WIRE-2 | Malformed input — bad magic, short packet, `wcount`/`rcount` promising bytes the packet lacks — produces no reply and zero bus accesses | truncation at every byte offset | `CTEST` (2149-case sweep) | PASS |
 | SWEB-5 | S-WIRE-2a | No reply exceeds request length + 16, and no byte beyond `resp_len` is written | canary + contract checked on every call of the sweep | `CTEST` | PASS |
 | SWEB-6 | S-WIRE-5 | 255-word write and read bursts complete intact | full-depth burst both directions | `CTEST` | PASS |
-| SWEB-7 | S-WIRE-2b | Requests are accepted on any UDP dst port, gated by Etherbone magic; the reply mirrors the request's ports | port-rewritten request | `CTEST` (serve-loop harness) | UNIMPLEMENTED |
-| SWEB-8 | S-WIRE-2b | The reply is unicast to the MAC captured from the request frame; no ARP request for the requester is ever emitted | reply addressing | `CTEST` (udp fork harness) | UNIMPLEMENTED |
-| SWEB-9 | S-WIRE-2 | Byte-for-byte differential against litex's own `EtherbonePacket` encode/decode: litex-encoded requests parse, replies decode as litex expects | probe, reads, writes, randomized records | `PYTEST` driving the `CTEST` binary | UNIMPLEMENTED |
-| SWEB-10 | S-NET-4 | The RX path delivers UDP to the callback for dst = own IP, limited broadcast, and /24 subnet broadcast — and for nothing else | all three classes + a foreign unicast | `CTEST` (udp fork harness) | UNIMPLEMENTED |
-| SWEB-11 | S-NET-4 | Every TX frame below 100 bytes leaves padded to 100 with zeroed trailer | ARP reply, gratuitous announce | `CTEST` (udp fork harness) | UNIMPLEMENTED |
+| SWEB-7 | S-WIRE-2b | Requests are accepted on any UDP dst port, gated by Etherbone magic; the reply mirrors the request's ports | port-rewritten request | `CTEST` `test_eb_serve_host.c` | PASS |
+| SWEB-8 | S-WIRE-2b | The reply is unicast to the MAC captured from the request frame; no ARP request for the requester is ever emitted | reply addressing | `CTEST` `test_udp_host.c` + `test_eb_serve_host.c` | PASS |
+| SWEB-9 | S-WIRE-2 | Byte-for-byte differential against litex's own `EtherbonePacket` encode/decode: litex-encoded requests parse, replies decode as litex expects | probe, reads, writes, randomized records | `PYTEST` `test_eb_golden.py` | PASS |
+| SWEB-10 | S-NET-4 | The RX path delivers UDP to the callback for dst = own IP, limited broadcast, and /24 subnet broadcast — and for nothing else | all three classes + a foreign unicast | `CTEST` `test_udp_host.c` | PASS |
+| SWEB-11 | S-NET-4 | Every TX frame below 100 bytes leaves padded to 100 with zeroed trailer | ARP reply, gratuitous announce | `CTEST` `test_udp_host.c` | PASS |
 | SWEB-12 | S-NET-3 | Gratuitous ARP at serve start and ~30 s cadence; gateway ARP round-trip at ~10 s cadence | on-board observation | `HW` | UNIMPLEMENTED |
-| SWEB-13 | S-WIRE-2b | `CommUDPBroadcast.probe()`/`.read()` tolerate the socket's own broadcast echo and stale replies, correlating by `read_counter` | fake socket feeding echo + stale + good | `PYTEST` | UNIMPLEMENTED |
-| SWEB-14 | S-WIRE-2b | `discover()` tries the broadcast probe before DNS and the unicast sweep; a broadcast answer short-circuits and is cached | mocked transports | `PYTEST` | UNIMPLEMENTED |
+| SWEB-13 | S-WIRE-2b | `CommUDPBroadcast.probe()`/`.read()` tolerate the socket's own broadcast echo and stale replies, correlating by `read_counter` | fake socket feeding echo + stale + good | `PYTEST` `test_eb_server.py` | PASS |
+| SWEB-14 | S-WIRE-2b | `discover()` tries the broadcast probe before DNS and the unicast sweep; a broadcast answer short-circuits and is cached | mocked transports | `PYTEST` `test_discovery.py` | PASS |
 
 ### 2.9 End-to-end (`E2E`)
 

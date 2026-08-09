@@ -623,3 +623,23 @@ def test_connect_startup_timeout_cleans_up_once(tmp_path, monkeypatch):
 
     reacquired = acquire_lock(lock_path)
     reacquired.release()
+
+
+def test_spawn_litex_server_uses_b8008net_bridge(monkeypatch):
+    """The bridge must be b8008net's broadcast eb_server, not stock
+    litex_server -- stock unicasts requests, which mesh WiFi drops."""
+    import subprocess as sp
+    import sys
+    argv_seen = {}
+
+    def fake_popen(argv, **kwargs):
+        argv_seen["argv"] = argv
+
+        class P:
+            pass
+        return P()
+
+    monkeypatch.setattr(sp, "Popen", fake_popen)
+    board_mod._spawn_litex_server("192.168.7.45")
+    assert argv_seen["argv"][0] == sys.executable
+    assert argv_seen["argv"][1:] == ["-m", "b8008net.eb_server"]

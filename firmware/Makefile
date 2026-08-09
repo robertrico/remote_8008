@@ -40,7 +40,7 @@ CFLAGS += -DETH_UDP_BROADCAST
 # vendored copy because make searches the current directory before VPATH.)
 VPATH  += $(LIBLITEETH_DIRECTORY)
 
-OBJECTS = crt0.o main.o dhcp8008.o eb8008.o udp.o mdio.o
+OBJECTS = crt0.o main.o dhcp8008.o eb8008.o eb_serve.o udp.o mdio.o
 
 # Stripped down from the BIOS's full PACKAGES list: just what main.c and
 # dhcp8008.c actually pull in (libbase's uart/timer/crc32, picolibc,
