@@ -251,7 +251,7 @@ static void test_bounds_sweep(void)
     // Adversarial: every (wcount, rcount) x truncation point over a small
     // window. The CHECKs inside handle() enforce the size contract and the
     // canary on every single call; this sweep just drives the space.
-    int calls = 0;
+    int calls = 0, effect_violations = 0;
     for (int wc = 0; wc <= 6; wc++) {
         for (int rc = 0; rc <= 6; rc++) {
             uint32_t data[6], addrs[6];
@@ -259,15 +259,26 @@ static void test_bounds_sweep(void)
             int full = hdr(req, 0);
             full += record(req + full, wc, BUS_BASE, wc ? data : NULL,
                            rc, 9, rc ? addrs : NULL);
+            // byte offsets at which each section is completely present
+            int write_done = 8 + 4 + (wc ? 4 * (1 + wc) : 0);
+            int read_done  = write_done + (rc ? 4 * (1 + rc) : 0);
             for (int cut = 0; cut <= full; cut++) {
                 bus_reset();
                 handle(cut);
                 calls++;
+                // Exact bus-effect law: a section executes iff every one of
+                // its bytes arrived. Anything else is the parser trusting a
+                // count it could not verify.
+                uint32_t want_w = (wc && cut >= write_done) ? (uint32_t)wc : 0;
+                uint32_t want_r = (rc && cut >= read_done)  ? (uint32_t)rc : 0;
+                if (bus_writes != want_w || bus_reads != want_r)
+                    effect_violations++;
             }
         }
     }
-    printf("bounds sweep: %d adversarial calls, contract+canary held\n", calls);
-    CHECK(1, "bounds sweep completed");
+    printf("bounds sweep: %d adversarial calls, %d bus-effect violations\n",
+           calls, effect_violations);
+    CHECK(effect_violations == 0, "bounds sweep: exact bus-effect law held");
 }
 
 int main(void)
