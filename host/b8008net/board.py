@@ -78,8 +78,12 @@ def _read_config_identifier(csr_csv):
 
 
 def _spawn_litex_server(host):
+    # b8008net's own bridge, not stock `litex_server --udp <host>`: requests
+    # go out as LAN broadcast (see eb_server.py for why -- mesh WiFi drops
+    # client->board unicast), so the board's address is not needed here.
+    del host
     return subprocess.Popen(
-        ["litex_server", "--udp", "--udp-ip", host],
+        [sys.executable, "-m", "b8008net.eb_server"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

@@ -26,19 +26,25 @@
 #include <libliteeth/mdio.h>
 
 #include "dhcp8008.h"
+#include "eb8008.h"
 
 // The Etherbone core's identity (see caveat 1 in dhcp8008.c): this is what
 // goes in the DHCP chaddr/client-id fields, and it's the address the leased
 // IP is ultimately *for*.
-static const uint8_t chaddr_etherbone[6] = {0x10, 0xe2, 0xd5, 0x00, 0x00, 0x01};
+// Bring-up experiment: Raspberry Pi OUI (B8:27:EB) instead of the project's
+// 10:E2:D5 -- testing whether the MR60 drops WiFi->wired unicast based on
+// an OUI it doesn't recognize.
+static const uint8_t chaddr_etherbone[6] = {0xb8, 0x27, 0xeb, 0x00, 0x80, 0x09};
 
 // The CPU's own ethmac interface: this is what actually goes in the
 // Ethernet frames' source MAC field (udp_start()'s macaddr argument).
-static const uint8_t mac_ethmac[6] = {0x10, 0xe2, 0xd5, 0x00, 0x00, 0x02};
+static const uint8_t mac_ethmac[6] = {0xb8, 0x27, 0xeb, 0x00, 0x80, 0x08};
 
 #define DHCP_CLIENT_PORT 68
 #define DHCP_SERVER_PORT 67
 #define DHCP_MAX_TRIES   5
+
+#define ETHERBONE_PORT   1234
 
 // udp_service() poll budget per DISCOVER/REQUEST wait. There's no hardware
 // timer wired for a real deadline here, so this mirrors the same
@@ -61,6 +67,21 @@ static volatile int rx_got;
 static uint8_t rx_msgbuf[DHCP_MIN_PACKET_LEN + 64];
 static int rx_msglen;
 
+// ── software Etherbone server state ─────────────────────────────────────────
+// One request in flight at a time -- litex's CommUDP is strictly
+// request/response, and the callback context can't ARP-resolve (that would
+// nest udp_service), so the callback just stashes the request and the main
+// serve loop replies.
+#define EB_BUF_LEN 1500
+static volatile int eb_pending;
+static uint32_t eb_src_ip;
+static uint16_t eb_src_port;
+static uint16_t eb_dst_port;
+static uint8_t  eb_src_mac[6];
+static uint8_t  eb_req[EB_BUF_LEN];
+static int      eb_req_len;
+static uint8_t  eb_resp[EB_BUF_LEN + 16];
+
 static void dhcp_rx_callback(uint32_t src_ip, uint16_t src_port,
                               uint16_t dst_port, void *data, uint32_t length)
 {
@@ -72,6 +93,67 @@ static void dhcp_rx_callback(uint32_t src_ip, uint16_t src_port,
     memcpy(rx_msgbuf, data, length);
     rx_msglen = (int)length;
     rx_got = 1;
+}
+
+static volatile uint32_t eb_cb_any, eb_cb_port, eb_served, eb_resolve_fail;
+
+// Bring-up counters + gratuitous-ARP announce from the local udp.c fork.
+extern uint32_t dbg_rx_frames, dbg_rx_arp, dbg_rx_ip, dbg_rx_short;
+extern uint32_t dbg_ip_tome, dbg_ip_bcast, dbg_ip_other;
+void udp_announce_arp(void);
+int udp_arp_refresh(uint32_t ip);
+void udp_set_peer(uint32_t ip, const uint8_t *mac);
+extern uint8_t udp_last_src_mac[6];
+
+static void eb_rx_callback(uint32_t src_ip, uint16_t src_port,
+                            uint16_t dst_port, void *data, uint32_t length)
+{
+    eb_cb_any++;
+    // No dst_port filter: mesh routers can rewrite ports in transit, so the
+    // Etherbone magic check below is the real gate.
+    if (eb_pending)
+        return;
+    if (length >= 2 && (((const uint8_t *)data)[0] != 0x4e ||
+                        ((const uint8_t *)data)[1] != 0x6f))
+        return; // not Etherbone
+    eb_cb_port++;
+    eb_dst_port = dst_port;
+    memcpy(eb_src_mac, (const void *)udp_last_src_mac, 6);
+    if (length > sizeof(eb_req))
+        return;
+    memcpy(eb_req, data, length);
+    eb_req_len  = (int)length;
+    eb_src_ip   = src_ip;
+    eb_src_port = src_port;
+    eb_pending  = 1;
+}
+
+// Reply to the stashed Etherbone request (main-loop context: ARP resolve of
+// the requester is safe here). The single-entry ARP cache in libliteeth's
+// udp.c persists across requests, so the resolve only round-trips when the
+// requester changes.
+static void eb_serve_pending(void)
+{
+    static uint32_t eb_resolved_ip;
+
+    if (!eb_pending)
+        return;
+
+    int resp_len = eb8008_handle(eb_req, eb_req_len, eb_resp);
+    if (resp_len) {
+        // Unicast the reply straight to the requester's captured MAC/IP.
+        // No ARP resolve: that round-trip would depend on the client->board
+        // unicast direction, which the mesh drops. Board->client unicast is
+        // the proven-good direction.
+        (void)eb_resolved_ip;
+        udp_set_peer(eb_src_ip, eb_src_mac);
+        memcpy(udp_get_tx_buffer(), eb_resp, (size_t)resp_len);
+        // Mirror the ports the request arrived with -- a NATing mesh maps
+        // the reply back to the client only if they match.
+        udp_send(eb_dst_port, eb_src_port, (uint32_t)resp_len);
+        eb_served++;
+    }
+    eb_pending = 0;
 }
 
 // Total frames seen at the MAC's RX slot interface (approximate: sampled as
@@ -266,36 +348,56 @@ int main(void)
         mdio_write(phy_addr, 0, 0x1340); // aneg on + restart
     }
 
-    // Bring-up TX discriminator: park the Etherbone core on a static LAN
-    // address before DHCP ever succeeds. The hardware stack answers ARP for
-    // this IP with zero firmware involvement, so from the host:
-    //   ping 192.168.1.222 -> ARP entry appears  => hardware TX path works
-    //                          (points at the ethmac TX arbiter)
-    //   no ARP entry        => RGMII TX broken for everything
-    // A successful DHCP lease later overwrites this with the real address.
-    eb_ip_ip_write(0xC0A801DEu); // 192.168.1.222
-    printf("etherbone: parked at static 192.168.1.222 (pre-DHCP)\n");
-
-    int leased = 0;
-    uint32_t ip = 0, lease_secs = 0, elapsed = 0;
+    uint32_t ip = 0, lease_secs = 0;
 
     for (;;) {
-        if (!leased || elapsed >= lease_secs / 2) {
-            printf(leased ? "dhcp: re-acquiring (fresh DISCOVER)...\n"
-                           : "dhcp: acquiring...\n");
-            if (dhcp_run(&ip, &lease_secs)) {
-                eb_ip_ip_write(ip);
-                leased  = 1;
-                elapsed = 0;
-                print_ip("dhcp: leased ", ip);
-                printf(", lease %u s\n", (unsigned)lease_secs);
-            } else {
-                printf("dhcp: no reply after %d tries, retrying in 1s\n",
-                       DHCP_MAX_TRIES);
-                phy_report();
+        // Acquire (or re-acquire) a lease. dhcp_run drives the RX filter
+        // itself, but the *remote* endpoint may still point at the last
+        // Etherbone client after a serve period -- force broadcast back on
+        // for the DISCOVER/REQUEST exchange.
+        udp_set_broadcast();
+        printf("dhcp: acquiring...\n");
+        while (!dhcp_run(&ip, &lease_secs)) {
+            printf("dhcp: no reply after %d tries, retrying in 1s\n",
+                   DHCP_MAX_TRIES);
+            phy_report();
+            busy_wait(1000);
+        }
+        eb_ip_ip_write(ip);
+        print_ip("dhcp: leased ", ip);
+        printf(", lease %u s\n", (unsigned)lease_secs);
+
+        // Serve software Etherbone on the leased address until the lease is
+        // half way through, then re-acquire (spec-ish renewal without a
+        // wall clock). EB_SERVE_LOOPS_PER_SEC is a rough calibration of the
+        // service loop -- renewal timing only needs to be right within a
+        // factor of a few on an 86400 s lease.
+        #define EB_SERVE_LOOPS_PER_SEC 400000u
+        udp_set_ip(ip);
+        udp_set_callback(eb_rx_callback);
+        // Broadcast requests land here too: the client broadcasts because
+        // the mesh drops client->board unicast, and broadcast is the proven
+        // delivery path in that direction.
+        udp_set_broadcast_callback(eb_rx_callback);
+        udp_announce_arp(); // repopulate the LAN's ARP tables immediately
+        printf("etherbone: serving on UDP %d\n", ETHERBONE_PORT);
+        for (uint32_t s = 0; s < lease_secs / 2; s++) {
+            if ((s % 30) == 0)
+                udp_announce_arp(); // periodic refresh
+            // ARP the gateway every ~10 ticks: the request repopulates the
+            // router's table with our mapping (see udp_arp_refresh) after
+            // its negative-cache backoff. Assumes .1 on our /24.
+            if ((s % 10) == 1) {
+                uint32_t gw = (ip & 0xffffff00u) | 1u;
+                if (!udp_arp_refresh(gw))
+                    printf("arp: gateway refresh timeout\n");
+            }
+            for (uint32_t i = 0; i < EB_SERVE_LOOPS_PER_SEC; i++) {
+                service_and_count(); // udp_service + rx_frames sampling
+                eb_serve_pending();
             }
         }
-        busy_wait(1000);
-        elapsed++;
+        udp_set_callback((udp_callback)0);
+        printf("dhcp: lease half-life reached, renewing\n");
     }
 }

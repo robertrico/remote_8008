@@ -105,6 +105,52 @@ def _is_probe_reply(data):
     return pkt.magic == etherbone_magic and pkt.pr == 1
 
 
+def probe_broadcast(port=ETHERBONE_PORT, timeout=SWEEP_TIMEOUT_S, sock=None):
+    """Single broadcast Etherbone probe: one datagram to 255.255.255.255,
+    first valid probe-reply wins. Both faster than the unicast sweep and the
+    only reliable client->board direction on mesh WiFi that drops or NATs
+    client->wired unicast (the board replies unicast, which is reliable).
+    Returns the responder's address, or None."""
+    packet = probe_packet()
+    owns_sock = sock is None
+    if sock is None:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    try:
+        # Subnet-directed broadcast reaches through mesh WiFi bridges that
+        # drop the limited (255.255.255.255) form; send both regardless.
+        targets = ["255.255.255.255"]
+        try:
+            ip, netmask = local_ipv4_and_netmask()
+            subnet_bcast = _int_to_ip(_ip_to_int(ip) | (~_ip_to_int(netmask) & 0xFFFFFFFF))
+            targets.insert(0, subnet_bcast)
+        except OSError:
+            pass
+        sent = 0
+        for target in targets:
+            try:
+                sock.sendto(packet, (target, port))
+                sent += 1
+            except OSError:
+                continue
+        if not sent:
+            return None
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            readable, _, _ = select.select([sock], [], [], remaining)
+            if not readable:
+                return None
+            data, addr = sock.recvfrom(2048)
+            if _is_probe_reply(data):
+                return addr[0]
+    finally:
+        if owns_sock:
+            sock.close()
+
+
 def probe_sweep(candidates, port=ETHERBONE_PORT, timeout=SWEEP_TIMEOUT_S, sock=None):
     """Send an Etherbone probe to every candidate, then wait up to `timeout`
     seconds total for a datagram that actually parses as an Etherbone
@@ -172,6 +218,13 @@ def discover(cache_path=DEFAULT_CACHE_PATH, use_cache=True):
         cached = load_cache(cache_path)
         if cached:
             return cached
+
+    # Broadcast probe first: one packet, and the only reliable
+    # client->board direction on mesh WiFi (see probe_broadcast).
+    bcast_host = probe_broadcast()
+    if bcast_host:
+        save_cache(cache_path, bcast_host)
+        return bcast_host
 
     dns_host = resolve_dns()
     if dns_host:

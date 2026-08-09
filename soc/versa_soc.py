@@ -549,18 +549,20 @@ class BaseSoC(SoCCore):
         # firmware writes the real address into eb_ip -- see the top comment).
         self.eb_ip = _EbIP()
 
-        # Bring-up bisect: plain ethmac, no Etherbone/hybrid interface. The
-        # DHCP firmware runs unmodified (eb_ip write becomes a no-op); if DHCP
-        # leases here but not in hybrid mode, the hybrid TX arbiter is the
-        # corruption point found during Ethernet bring-up.
+        # Production network config: plain CPU ethmac, no liteeth hybrid
+        # interface. The hybrid hardware Etherbone path is dead on silicon at
+        # gigabit (tag hybrid-debug-2026-08-08 has the full post-mortem);
+        # Etherbone is served by the firmware over this ethmac instead
+        # (firmware/eb8008.c) -- protocol-compatible with RemoteClient. The
+        # b8008 monitor core below is unaffected either way.
         if ethmac_only:
             self.add_ethernet(phy=self.ethphy)
-            return
 
         # Bring-up bisect: --stock-hybrid uses litex's own add_etherbone
         # (static IP only) instead of the local reconstruction -- the true
-        # known-good hybrid reference.
-        if stock_hybrid:
+        # known-good hybrid reference. Dead on silicon, kept for the future
+        # hybrid deep-dive.
+        elif stock_hybrid:
             self.add_etherbone(
                 phy              = self.ethphy,
                 ip_address       = "192.168.1.222",
@@ -574,32 +576,34 @@ class BaseSoC(SoCCore):
                 ethmac_remote_ip = "0.0.0.0")
             return
 
-        # Bring-up bisect: --eb-static-ip pins the Etherbone core to a
-        # build-time address (no eb_ip CSR Mux in the datapath). Discriminates
-        # dynamic-IP-Mux breakage from hybrid-stack breakage.
-        if eb_static_ip:
-            eb_ip_address = eb_static_ip
+        # Hybrid hardware Etherbone (dead on silicon -- kept for the future
+        # deep-dive; see tag hybrid-debug-2026-08-08).
         else:
-            eb_ip_address = Mux(self.eb_ip.ip.storage == 0,
-                                C(0xF0000001, 32),   # 240.0.0.1
-                                self.eb_ip.ip.storage)
+            # Bring-up bisect: --eb-static-ip pins the Etherbone core to a
+            # build-time address (no eb_ip CSR Mux in the datapath).
+            if eb_static_ip:
+                eb_ip_address = eb_static_ip
+            else:
+                eb_ip_address = Mux(self.eb_ip.ip.storage == 0,
+                                    C(0xF0000001, 32),   # 240.0.0.1
+                                    self.eb_ip.ip.storage)
 
-        add_etherbone_dynamic_ip(self,
-            phy              = self.ethphy,
-            mac_address      = 0x10e2d5000001,
-            ip_address       = eb_ip_address,
-            # 32-bit sys datapath, not the dw=8 default: at dw=8 the hybrid
-            # hardware stack runs in the 60 MHz sys domain at 60 MB/s -- below
-            # the 125 MB/s gigabit line rate -- and its TX frames underrun at
-            # the eth_tx CDC. 32-bit gives 240 MB/s of headroom.
-            data_width       = 32,
-            udp_port         = 1234,
-            buffer_depth     = 255,          # REQUIRED: default (16) overflows on 255-word bursts
-            with_ip_broadcast= False,        # stricter: IP layer does not blanket-accept every IPv4 frame
-            with_ethmac      = True,
-            ethmac_address   = 0x10e2d5000002,
-            ethmac_local_ip  = "0.0.0.0",
-            ethmac_remote_ip = "0.0.0.0")
+            add_etherbone_dynamic_ip(self,
+                phy              = self.ethphy,
+                mac_address      = 0x10e2d5000001,
+                ip_address       = eb_ip_address,
+                # 32-bit sys datapath, not the dw=8 default: at dw=8 the
+                # hybrid hardware stack runs in the 60 MHz sys domain at
+                # 60 MB/s -- below the 125 MB/s gigabit line rate -- and its
+                # TX frames underrun at the eth_tx CDC.
+                data_width       = 32,
+                udp_port         = 1234,
+                buffer_depth     = 255,          # REQUIRED: default (16) overflows on 255-word bursts
+                with_ip_broadcast= False,        # stricter: IP layer does not blanket-accept every IPv4 frame
+                with_ethmac      = True,
+                ethmac_address   = 0x10e2d5000002,
+                ethmac_local_ip  = "0.0.0.0",
+                ethmac_remote_ip = "0.0.0.0")
 
         # Intel-8008 monitor core ------------------------------------------------------------------
         # Repo-root build/ (same convention as NETLIST_V/GHDL_GATES/VERSA_DIR in

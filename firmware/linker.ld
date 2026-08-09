@@ -11,7 +11,18 @@
 INCLUDE generated/output_format.ld
 ENTRY(_start)
 
-INCLUDE generated/regions.ld
+/* NOT generated/regions.ld: the LiteX builder rewrites that file on every
+ * --integrated-rom-init gateware build with the ROM shrunk to fit the
+ * *previous* firmware image, so including it makes each firmware build fail
+ * as soon as the binary grows ("region rom overflowed" chicken-and-egg).
+ * Fixed map instead: origins are stable for this SoC and the lengths are the
+ * BaseSoC ceilings (integrated_rom_size=0x10000, integrated_sram_size=0x2000
+ * in soc/versa_soc.py). The SoC build still sizes the real ROM to the actual
+ * binary -- this ceiling only governs the link. */
+MEMORY {
+	rom : ORIGIN = 0x00000000, LENGTH = 0x00010000
+	sram : ORIGIN = 0x10000000, LENGTH = 0x00002000
+}
 
 SECTIONS
 {

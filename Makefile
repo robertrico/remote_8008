@@ -211,6 +211,15 @@ FIRMWARE_BIN := firmware/build/firmware.bin
 # CPU are then unreliable on silicon. 60 MHz closes with margin (~77 MHz).
 SYS_CLK_FREQ ?= 60e6
 
+# --ethmac-only: plain CPU ethmac, no liteeth hybrid interface. The hybrid
+# hardware Etherbone path is dead on silicon at gigabit (see tag
+# hybrid-debug-2026-08-08); Etherbone is served by the firmware instead
+# (firmware/eb8008.c), protocol-compatible with litex_server/RemoteClient.
+# --debug-uart stays on while the network stack is under bring-up: without it
+# the SoC has no console at all (uart stub) and a working-vs-broken build is
+# indistinguishable from the outside. Drop it deliberately when done.
+SOC_FLAGS ?= --sys-clk-freq $(SYS_CLK_FREQ) --ethmac-only --debug-uart
+
 # ============================================================================
 # bootstrap-headers: software-only SoC build -> generated headers + libraries
 # ============================================================================
@@ -237,7 +246,7 @@ SW_VARIABLES := $(VERSA_DIR)/software/include/generated/variables.mak
 $(SW_VARIABLES): | $(NETLIST_V)
 	@mkdir -p $(VERSA_DIR)
 	$(PY) soc/versa_soc.py --build --output-dir $(VERSA_DIR) --csr-csv $(VERSA_DIR)/csr.csv \
-	    --sys-clk-freq $(SYS_CLK_FREQ) --no-compile-gateware
+	    $(SOC_FLAGS) --no-compile-gateware
 	test -f $(SW_VARIABLES)
 	@echo "bootstrap: $(SW_VARIABLES)"
 
@@ -279,7 +288,7 @@ firmware: $(SW_VARIABLES)
 build: convert firmware
 	@mkdir -p $(VERSA_DIR)
 	$(PY) soc/versa_soc.py --build --output-dir $(VERSA_DIR) --csr-csv $(VERSA_DIR)/csr.csv \
-	    --sys-clk-freq $(SYS_CLK_FREQ) --integrated-rom-init $(FIRMWARE_BIN) --no-compile-software
+	    $(SOC_FLAGS) --integrated-rom-init $(FIRMWARE_BIN) --no-compile-software
 	test -f $(VERSA_BIT)
 	@echo "bitstream: $(VERSA_BIT)"
 

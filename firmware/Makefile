@@ -35,9 +35,12 @@ include $(SOC_DIRECTORY)/software/common.mak
 # with that one flag turned on, and skip linking the prebuilt libliteeth.a
 # entirely (nothing else in it -- mdio, tftp -- is used here).
 CFLAGS += -DETH_UDP_BROADCAST
+# (ETH_UDP_RX_DEBUG hex-dumps every RX frame -- add back if needed. The
+# local udp.c fork carries targeted ARP diagnostics instead; it shadows the
+# vendored copy because make searches the current directory before VPATH.)
 VPATH  += $(LIBLITEETH_DIRECTORY)
 
-OBJECTS = crt0.o main.o dhcp8008.o udp.o mdio.o
+OBJECTS = crt0.o main.o dhcp8008.o eb8008.o udp.o mdio.o
 
 # Stripped down from the BIOS's full PACKAGES list: just what main.c and
 # dhcp8008.c actually pull in (libbase's uart/timer/crc32, picolibc,
