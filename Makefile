@@ -312,6 +312,9 @@ vplan:
 # Hardware-in-the-loop checks live in `make selftest` (board required).
 # ============================================================================
 HOSTCC       ?= cc
+# gcov front-end: Apple clang spells it `xcrun llvm-cov gcov`; Linux/gcc CI
+# overrides with GCOV=gcov (paired with HOSTCC=gcc).
+GCOV         ?= xcrun llvm-cov gcov
 C_TEST_DIR   := build/ctest
 
 .PHONY: test-c
@@ -358,7 +361,7 @@ coverage-c:
 	    $(CURDIR)/firmware/udp.c $(CURDIR)/firmware/eb8008.c $(CURDIR)/firmware/eb_serve.c \
 	    $(CURDIR)/firmware/test_eb_serve_host.c && \
 	  ./test_eb_serve > /dev/null && \
-	  xcrun llvm-cov gcov test_eb8008-eb8008.gcda test_dhcp-dhcp8008.gcda \
+	  $(GCOV) test_eb8008-eb8008.gcda test_dhcp-dhcp8008.gcda \
 	    test_udp-udp.gcda test_eb_serve-eb_serve.gcda 2>/dev/null | \
 	    grep -A1 "File.*firmware/" | grep -v test_ > coverage.txt && \
 	  cat coverage.txt && \

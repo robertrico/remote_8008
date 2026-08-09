@@ -1,0 +1,86 @@
+# Software-side verification CI for remote_8008.
+#
+# What runs here: everything `make test` + `make coverage-c` cover -- the
+# hermetic pytest suites, the host-compiled firmware C unit tests with their
+# 100% line-coverage gate, and the BaseSoC elaboration checks (which need the
+# FuseSoC-converted netlist, hence the oss-cad-suite + core-repo checkout).
+#
+# What does NOT run here: anything needing the physical board (`make
+# selftest`, VPLAN HW rows) or a full bitstream build (nextpnr; run locally).
+#
+# The vendored litex/* checkouts are gitignored (recreated by `make
+# litex-env`); CI rebuilds that environment and caches it on the pinned tag.
+name: verification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  LITEX_TAG: "2026.04"
+
+jobs:
+  software:
+    name: make test + coverage-c
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache LiteX environment
+        id: litex-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .venv
+            litex
+            litex-boards
+            liteeth
+            litedram
+            liteiclink
+            litescope
+            litespi
+            litesdcard
+            litesata
+            litepcie
+            litejesd204b
+            litei2c
+            migen
+            pythondata-*
+          key: litex-env-${{ env.LITEX_TAG }}-${{ runner.os }}-v1
+
+      - name: Bootstrap LiteX environment
+        if: steps.litex-cache.outputs.cache-hit != 'true'
+        run: make litex-env
+
+      - name: Install test dependencies
+        run: |
+          .venv/bin/python -m pip install pytest fusesoc
+          .venv/bin/python -m pip install -e host
+
+      - uses: YosysHQ/setup-oss-cad-suite@v3
+        with:
+          osscadsuite-version: "2025-07-15"
+
+      - name: Check out intel-8008-vhdl (FuseSoC core dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: robertrico/intel-8008-vhdl
+          path: core-repo
+
+      - name: Convert core netlist
+        run: make convert CORE_DIR=$GITHUB_WORKSPACE/core-repo OSS_CAD_SUITE=$(dirname $(which yosys))
+
+      - name: C unit tests + coverage gate
+        run: |
+          make test-c HOSTCC=gcc
+          make coverage-c HOSTCC=gcc GCOV=gcov
+
+      - name: Host + SoC pytest suites
+        run: make test
