@@ -37,7 +37,7 @@ include $(SOC_DIRECTORY)/software/common.mak
 CFLAGS += -DETH_UDP_BROADCAST
 VPATH  += $(LIBLITEETH_DIRECTORY)
 
-OBJECTS = crt0.o main.o dhcp8008.o udp.o
+OBJECTS = crt0.o main.o dhcp8008.o udp.o mdio.o
 
 # Stripped down from the BIOS's full PACKAGES list: just what main.c and
 # dhcp8008.c actually pull in (libbase's uart/timer/crc32, picolibc,

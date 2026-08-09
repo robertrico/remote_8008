@@ -366,6 +366,18 @@ class _EbIP(LiteXModule):
 # ── b8008 debug bus pin-out (X3 expansion) ──────────────────────────────────
 # Sites copied verbatim from projects/b8008_monitor/constraints/b8008_monitor.lpf
 # (the serial monitor's logic-analyzer header). All LVCMOS33.
+# ── debug UART (X3 expansion) ───────────────────────────────────────────────
+# Bring-up console on an external 3.3V FTDI: FPGA TX = B19 (-> FTDI RX),
+# FPGA RX = B12 (<- FTDI TX) -- matches the bench wiring as-is.
+# Off by default (uart_name="stub"); --debug-uart swaps it in so the DHCP
+# firmware's printf output is observable during board bring-up.
+_debug_serial_io = [
+    ("debug_serial", 0,
+        Subsignal("tx", Pins("B19")),
+        Subsignal("rx", Pins("B12")),
+        IOStandard("LVCMOS33")),
+]
+
 _b8008_dbg_io = [
     ("b8008_dbg", 0,
         Subsignal("d",    Pins("E9 D9 B8 C8 D8 E8 C7 C6")),  # cpu_d[0..7]
@@ -487,9 +499,13 @@ class _CRG(LiteXModule):
 
 # ── BaseSoC ─────────────────────────────────────────────────────────────────
 class BaseSoC(SoCCore):
-    def __init__(self, sys_clk_freq=75e6, device="LFE5UM5G", toolchain="trellis", **kwargs):
+    def __init__(self, sys_clk_freq=75e6, device="LFE5UM5G", toolchain="trellis",
+                 debug_uart=False, ethmac_only=False, eb_static_ip=None,
+                 stock_hybrid=False, **kwargs):
         platform = lattice_versa_ecp5.Platform(toolchain=toolchain, device=device)
         platform.add_extension(_b8008_dbg_io)
+        if debug_uart:
+            platform.add_extension(_debug_serial_io)
 
         # CRG --------------------------------------------------------------------------------------
         self.crg = _CRG(platform, sys_clk_freq)
@@ -509,13 +525,20 @@ class BaseSoC(SoCCore):
             # Firmware/integrated_rom_init in Task 8 can revisit this.
             integrated_rom_size  = 0x10000,
             integrated_sram_size = 0x2000,
-            uart_name            = "stub",
+            uart_name            = "debug_serial" if debug_uart else "stub",
             ident                = "b8008_net",
             ident_version        = True,
         ))
         SoCCore.__init__(self, platform, sys_clk_freq, **kwargs)
 
         # Ethernet PHY + Etherbone/ethmac hybrid stack ---------------------------------------------
+        # 0 ns FPGA-side delays (stock versa target values) -- and they are
+        # load-bearing: the board's 88E1512 straps RGMII internal delays ON in
+        # both directions (MSCR2[5:4] = 11, read back over MDIO during
+        # bring-up), so the PHY provides the 2 ns clock-to-data skew itself.
+        # Adding liteeth's 2 ns tx_delay on top makes 4 ns total = one full
+        # DDR symbol at gigabit: every TX frame leaves corrupt and the switch
+        # drops it (board invisible, firmware loops "dhcp: no reply").
         self.ethphy = LiteEthPHYRGMII(
             clock_pads = platform.request("eth_clocks", 0),
             pads       = platform.request("eth", 0),
@@ -525,12 +548,51 @@ class BaseSoC(SoCCore):
         # CSR-driven, ARP-gated Etherbone IP (parks on class-E 240.0.0.1 until
         # firmware writes the real address into eb_ip -- see the top comment).
         self.eb_ip = _EbIP()
+
+        # Bring-up bisect: plain ethmac, no Etherbone/hybrid interface. The
+        # DHCP firmware runs unmodified (eb_ip write becomes a no-op); if DHCP
+        # leases here but not in hybrid mode, the hybrid TX arbiter is the
+        # corruption point found during Ethernet bring-up.
+        if ethmac_only:
+            self.add_ethernet(phy=self.ethphy)
+            return
+
+        # Bring-up bisect: --stock-hybrid uses litex's own add_etherbone
+        # (static IP only) instead of the local reconstruction -- the true
+        # known-good hybrid reference.
+        if stock_hybrid:
+            self.add_etherbone(
+                phy              = self.ethphy,
+                ip_address       = "192.168.1.222",
+                mac_address      = 0x10e2d5000001,
+                udp_port         = 1234,
+                buffer_depth     = 255,
+                data_width       = 32,
+                with_ethmac      = True,
+                ethmac_address   = 0x10e2d5000002,
+                ethmac_local_ip  = "0.0.0.0",
+                ethmac_remote_ip = "0.0.0.0")
+            return
+
+        # Bring-up bisect: --eb-static-ip pins the Etherbone core to a
+        # build-time address (no eb_ip CSR Mux in the datapath). Discriminates
+        # dynamic-IP-Mux breakage from hybrid-stack breakage.
+        if eb_static_ip:
+            eb_ip_address = eb_static_ip
+        else:
+            eb_ip_address = Mux(self.eb_ip.ip.storage == 0,
+                                C(0xF0000001, 32),   # 240.0.0.1
+                                self.eb_ip.ip.storage)
+
         add_etherbone_dynamic_ip(self,
             phy              = self.ethphy,
             mac_address      = 0x10e2d5000001,
-            ip_address       = Mux(self.eb_ip.ip.storage == 0,
-                                   C(0xF0000001, 32),   # 240.0.0.1
-                                   self.eb_ip.ip.storage),
+            ip_address       = eb_ip_address,
+            # 32-bit sys datapath, not the dw=8 default: at dw=8 the hybrid
+            # hardware stack runs in the 60 MHz sys domain at 60 MB/s -- below
+            # the 125 MB/s gigabit line rate -- and its TX frames underrun at
+            # the eth_tx CDC. 32-bit gives 240 MB/s of headroom.
+            data_width       = 32,
             udp_port         = 1234,
             buffer_depth     = 255,          # REQUIRED: default (16) overflows on 255-word bursts
             with_ip_broadcast= False,        # stricter: IP layer does not blanket-accept every IPv4 frame
@@ -581,6 +643,10 @@ def main():
         description="b8008_net SoC on Versa ECP5.")
     parser.add_target_argument("--sys-clk-freq", default=75e6, type=float, help="System clock frequency.")
     parser.add_target_argument("--device",       default="LFE5UM5G",       help="FPGA device (LFE5UM5G or LFE5UM).")
+    parser.add_target_argument("--debug-uart",   action="store_true",      help="Bring-up console on X3 (TX=B12, RX=B19) instead of the stub UART.")
+    parser.add_target_argument("--ethmac-only",  action="store_true",      help="Bring-up bisect: plain ethmac, no Etherbone/hybrid interface.")
+    parser.add_target_argument("--eb-static-ip", default=None,             help="Bring-up bisect: pin Etherbone to a static IP (no dynamic-IP Mux).")
+    parser.add_target_argument("--stock-hybrid", action="store_true",      help="Bring-up bisect: stock litex add_etherbone hybrid at 192.168.1.222.")
     args = parser.parse_args()
 
     # Task 8: `--integrated-rom-init firmware/build/firmware.bin` (a stock
@@ -599,6 +665,10 @@ def main():
         sys_clk_freq = args.sys_clk_freq,
         device       = args.device,
         toolchain    = args.toolchain,
+        debug_uart   = args.debug_uart,
+        ethmac_only  = args.ethmac_only,
+        eb_static_ip = args.eb_static_ip,
+        stock_hybrid = args.stock_hybrid,
         **parser.soc_argdict)
     builder = Builder(soc, **parser.builder_argdict)
     if args.build:

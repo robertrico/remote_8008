@@ -23,6 +23,7 @@
 
 #include <libbase/uart.h>
 #include <libliteeth/udp.h>
+#include <libliteeth/mdio.h>
 
 #include "dhcp8008.h"
 
@@ -73,11 +74,23 @@ static void dhcp_rx_callback(uint32_t src_ip, uint16_t src_port,
     rx_got = 1;
 }
 
+// Total frames seen at the MAC's RX slot interface (approximate: sampled as
+// writer ev_pending just before udp_service consumes it). Distinguishes
+// "RX path dead" from "frames arrive, none is our DHCP reply".
+static unsigned long rx_frames;
+
+static void service_and_count(void)
+{
+    if (ethmac_sram_writer_ev_pending_read())
+        rx_frames++;
+    udp_service();
+}
+
 static int wait_for_reply(void)
 {
     rx_got = 0;
     for (int i = 0; i < DHCP_REPLY_TIMEOUT_LOOPS; i++) {
-        udp_service();
+        service_and_count();
         if (rx_got)
             return 1;
     }
@@ -143,6 +156,73 @@ static int dhcp_run(uint32_t *out_ip, uint32_t *out_lease_secs)
     return 0;
 }
 
+// ── PHY diagnostics (bring-up) ──────────────────────────────────────────────
+// The RGMII gateware is gigabit-only: a link that negotiated 10/100 passes
+// frames through a 125 MHz MAC that mangles them, which looks exactly like
+// "dhcp: no reply" with a dead tcpdump. Scan the MDIO bus once for the PHY,
+// then report link/speed from the Marvell copper-status register each retry.
+static int phy_addr = -1;
+
+// Paged MDIO read (Marvell): page select lives in reg 22.
+static int mdio_read_paged(int addr, int page, int reg)
+{
+    int val;
+    mdio_write(addr, 22, page);
+    val = mdio_read(addr, reg);
+    mdio_write(addr, 22, 0);
+    return val;
+}
+
+static void phy_scan(void)
+{
+    for (int a = 0; a < 32; a++) {
+        int id1 = mdio_read(a, 2); // PHY identifier 1
+        if (id1 != 0xffff && id1 != 0x0000) {
+            printf("phy: addr %d id %04x:%04x\n", a, id1, mdio_read(a, 3));
+            if (phy_addr < 0)
+                phy_addr = a;
+        }
+    }
+    if (phy_addr < 0) {
+        printf("phy: no PHY found on MDIO bus!\n");
+        return;
+    }
+    // 88E1512 MAC-specific control 2 (page 2, reg 21): bit 5 = RGMII RX
+    // internal delay, bit 4 = RGMII TX internal delay. Tells us which side of
+    // the 2 ns skew the PHY already provides vs. what the FPGA must add.
+    int mscr2 = mdio_read_paged(phy_addr, 2, 21);
+    printf("phy: mscr2 %04x rgmii-rx-dly %d rgmii-tx-dly %d\n",
+           mscr2, !!(mscr2 & 0x0020), !!(mscr2 & 0x0010));
+}
+
+static void phy_report(void)
+{
+    static const char *speeds[4] = {"10", "100", "1000", "?"};
+    if (phy_addr < 0)
+        return;
+    int bmsr = mdio_read(phy_addr, 1);  // latched link (bit 2), aneg done (bit 5)
+    int stat = mdio_read(phy_addr, 17); // Marvell copper specific status
+    printf("phy: bmsr %04x link %d aneg %d | speed %s duplex %s rt-link %d\n",
+           bmsr, !!(bmsr & 0x0004), !!(bmsr & 0x0020),
+           speeds[(stat >> 14) & 3], (stat & 0x2000) ? "full" : "half",
+           !!(stat & 0x0400));
+    // RX-path truth: broadcast chatter (ARP etc.) hits the MAC constantly on
+    // any live LAN, so preamble/crc counters moving = frames reach the MAC;
+    // crc rising = they arrive corrupt (RGMII RX timing); all-zero = RX dead.
+    printf("mac: rx frames %lu preamble-err %lu crc-err %lu writer-err %lu\n",
+           rx_frames,
+           (unsigned long)ethmac_rx_datapath_preamble_errors_read(),
+           (unsigned long)ethmac_rx_datapath_crc_errors_read(),
+           (unsigned long)ethmac_sram_writer_errors_read());
+    // TX side: reader ready=1 + level=0 after sends means the MAC accepted
+    // and drained every TX frame (frames left the MAC; problem is at/after
+    // RGMII). ready=0 or level piling up = TX datapath wedged in the FPGA.
+    printf("mac: tx ready %d level %lu done-pending %d\n",
+           (int)ethmac_sram_reader_ready_read(),
+           (unsigned long)ethmac_sram_reader_level_read(),
+           (int)ethmac_sram_reader_ev_pending_read());
+}
+
 static void print_ip(const char *prefix, uint32_t ip)
 {
     printf("%s%d.%d.%d.%d", prefix, (int)((ip >> 24) & 0xff),
@@ -163,6 +243,39 @@ int main(void)
     udp_start(mac_ethmac, 0);
     udp_set_broadcast();
 
+    phy_scan();
+    phy_report();
+
+    // Bring-up TX self-test: PHY internal loopback (reg 0 bit 14, speed
+    // forced to 1000/full, autoneg off). TX frames fold back into RX inside
+    // the 88E1512, so "sent N, got back M" isolates the FPGA->PHY TX leg
+    // from everything beyond the PHY.
+    if (phy_addr >= 0) {
+        unsigned long before = rx_frames;
+        mdio_write(phy_addr, 0, 0x4140); // loopback | 1000 | full, aneg off
+        busy_wait(500);
+        for (int i = 0; i < 3; i++) {
+            int len = dhcp_build_discover(udp_get_tx_buffer(),
+                                          chaddr_etherbone, next_xid());
+            udp_set_ip(0);
+            udp_send(DHCP_CLIENT_PORT, DHCP_SERVER_PORT, (uint32_t)len);
+            for (int j = 0; j < 20000; j++)
+                service_and_count();
+        }
+        printf("loopback: sent 3, saw %lu frames back\n", rx_frames - before);
+        mdio_write(phy_addr, 0, 0x1340); // aneg on + restart
+    }
+
+    // Bring-up TX discriminator: park the Etherbone core on a static LAN
+    // address before DHCP ever succeeds. The hardware stack answers ARP for
+    // this IP with zero firmware involvement, so from the host:
+    //   ping 192.168.1.222 -> ARP entry appears  => hardware TX path works
+    //                          (points at the ethmac TX arbiter)
+    //   no ARP entry        => RGMII TX broken for everything
+    // A successful DHCP lease later overwrites this with the real address.
+    eb_ip_ip_write(0xC0A801DEu); // 192.168.1.222
+    printf("etherbone: parked at static 192.168.1.222 (pre-DHCP)\n");
+
     int leased = 0;
     uint32_t ip = 0, lease_secs = 0, elapsed = 0;
 
@@ -179,6 +292,7 @@ int main(void)
             } else {
                 printf("dhcp: no reply after %d tries, retrying in 1s\n",
                        DHCP_MAX_TRIES);
+                phy_report();
             }
         }
         busy_wait(1000);

@@ -60,14 +60,11 @@ B8008_SRCS := \
 	$(SRC_DIR)/b8008_types.vhdl \
 	$(SRC_DIR)/stack_pointer.vhdl \
 	$(SRC_DIR)/stack_memory.vhdl \
-	$(SRC_DIR)/stack_addr_mux.vhdl \
 	$(SRC_DIR)/instruction_register.vhdl \
 	$(SRC_DIR)/instruction_decoder.vhdl \
 	$(SRC_DIR)/condition_flags.vhdl \
 	$(SRC_DIR)/register_file.vhdl \
 	$(SRC_DIR)/scratchpad_decoder.vhdl \
-	$(SRC_DIR)/scratchpad_addr_mux.vhdl \
-	$(SRC_DIR)/sss_ddd_selector.vhdl \
 	$(SRC_DIR)/ahl_pointer.vhdl \
 	$(SRC_DIR)/temp_registers.vhdl \
 	$(SRC_DIR)/alu.vhdl \
@@ -130,7 +127,10 @@ sim-core:
 GHDL_GATES  := build/ghdl_gates.v
 NETLIST_TOP := b8008_net_core
 NETLIST_V   := build/b8008_net_core.v
-FUSESOC     ?= fusesoc
+# Absolute venv path, not bare `fusesoc`: make 3.81 execs metachar-free
+# recipe lines via execvp, which searches make's inherited PATH and ignores
+# the exported venv PATH above.
+FUSESOC     ?= $(VENV)/bin/fusesoc
 
 # Prereqs keep the OLD rule's core-VHDL sensitivity: a core repo edit must
 # regenerate the netlist (core and consumer co-evolve during this phase).
@@ -206,6 +206,11 @@ VERSA_DIR    := build/versa
 VERSA_BIT    := $(VERSA_DIR)/gateware/versa_soc.bit
 FIRMWARE_BIN := firmware/build/firmware.bin
 
+# 60 MHz, not the stock 75: at 75 MHz nextpnr closes the sys/etherbone domain
+# at only ~66 MHz (timing FAIL, bitstream still emitted) -- Etherbone and the
+# CPU are then unreliable on silicon. 60 MHz closes with margin (~77 MHz).
+SYS_CLK_FREQ ?= 60e6
+
 # ============================================================================
 # bootstrap-headers: software-only SoC build -> generated headers + libraries
 # ============================================================================
@@ -232,7 +237,7 @@ SW_VARIABLES := $(VERSA_DIR)/software/include/generated/variables.mak
 $(SW_VARIABLES): | $(NETLIST_V)
 	@mkdir -p $(VERSA_DIR)
 	$(PY) soc/versa_soc.py --build --output-dir $(VERSA_DIR) --csr-csv $(VERSA_DIR)/csr.csv \
-	    --no-compile-gateware
+	    --sys-clk-freq $(SYS_CLK_FREQ) --no-compile-gateware
 	test -f $(SW_VARIABLES)
 	@echo "bootstrap: $(SW_VARIABLES)"
 
@@ -274,15 +279,23 @@ firmware: $(SW_VARIABLES)
 build: convert firmware
 	@mkdir -p $(VERSA_DIR)
 	$(PY) soc/versa_soc.py --build --output-dir $(VERSA_DIR) --csr-csv $(VERSA_DIR)/csr.csv \
-	    --integrated-rom-init $(FIRMWARE_BIN) --no-compile-software
+	    --sys-clk-freq $(SYS_CLK_FREQ) --integrated-rom-init $(FIRMWARE_BIN) --no-compile-software
 	test -f $(VERSA_BIT)
 	@echo "bitstream: $(VERSA_BIT)"
 
 # openFPGALoader invocation copied from projects/project.mk (repo's proven
-# Versa flashing recipe).
+# Versa flashing recipe). prog loads volatile config RAM (lost on power
+# cycle); prog-flash writes the SPI flash so the bitstream survives reboot.
 .PHONY: prog
-prog:
+prog: $(VERSA_BIT)
 	$(OSS_CAD_SUITE)/openFPGALoader -c ft2232 -m $(VERSA_BIT)
+
+.PHONY: prog-flash
+prog-flash: $(VERSA_BIT)
+	$(OSS_CAD_SUITE)/openFPGALoader -c ft2232 -f $(VERSA_BIT)
+
+$(VERSA_BIT):
+	@echo "error: $(VERSA_BIT) not found -- run 'make build' first" >&2; exit 1
 
 # ============================================================================
 # check-synth: resource sanity on the built SoC
@@ -314,4 +327,5 @@ vplan:
 # ============================================================================
 .PHONY: login
 login:
+	@$(PY) -c 'import b8008net' 2>/dev/null || $(PY) -m pip install -e host
 	$(PY) -m b8008net.cli login $(if $(HOST),--host $(HOST),)
