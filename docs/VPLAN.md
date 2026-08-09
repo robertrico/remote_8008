@@ -37,8 +37,9 @@ final-fix-report.md` for the full retag audit.
 | `COCOTB-R` | constrained-random cocotb test | new |
 | `MIGENSIM` | Migen `run_simulation` unit test | `litex/test/test_uart.py`, `litex/test/test_csr_bus.py` |
 | `GHDL-TB` | GHDL VHDL testbench | `make test-*` in the core repo |
-| `VBENCH` | Verilator C++ bench driving buses directly | `sim/bench_tb.cpp`, `soc/bench_core.py` |
+| `VBENCH` | Verilator C++ bench driving buses directly | retired with sim-bench (D-10) |
 | `PYTEST` | host-side Python test | `host/tests/` |
+| `CTEST` | host-compiled firmware C unit test, 100% line coverage enforced | `firmware/test_*_host.c`, `make test-c` / `coverage-c` |
 | `SCRIPT` | program-level run + output check | `test_programs/verification_scripts/` + `checkpoint_lib.sh` |
 | `HW` | requires the physical board | `soc/host_selftest.py` |
 
@@ -197,13 +198,37 @@ re-run. No re-derivation from first principles, and no re-testing here.
 
 | ID | Spec cite | Assertion | Conditions | Check | Status |
 |---|---|---|---|---|---|
-| WIRE-1 | S-WIRE-2, S-WIRE-1 | Etherbone is elaborated with `buffer_depth=255` | elaboration | `PYTEST` | UNIMPLEMENTED |
+| WIRE-1 | S-WIRE-1 | ~~Etherbone is elaborated with `buffer_depth=255`~~ | — | — | SUPERSEDED — the hardware Etherbone endpoint is retired (SPEC §12 amendment 2026-08-09, tag `hybrid-debug-2026-08-08`); burst capacity is now SWEB-6 |
 | WIRE-2 | S-WIRE-2, S-WIRE-5 | A 255-word burst write completes with all 255 words landing, none dropped | full-depth burst | `HW` | UNIMPLEMENTED |
 | WIRE-3 | S-WIRE-2 | A 256-word burst write is either fully accepted or rejected as a unit — never partially applied | over-depth burst | `HW` | UNIMPLEMENTED |
 | WIRE-4 | S-WIRE-3 | A host read of *n* words issues *n* UDP round trips | measured packet count for *n* ∈ {1,16,255} | `PYTEST` with a mock transport | UNIMPLEMENTED |
 | WIRE-5 | S-WIRE-6, S-RX-6 | A read whose reply is dropped, then retried, yields the same value and advances no FIFO | reply-drop injected on 10% of reads | `PYTEST` with a lossy mock transport | UNIMPLEMENTED |
 | WIRE-6 | S-RX-8, S-WIRE-4 | The host obtains `{data, valid, level}` in one round trip; no host code path reads level and data separately | source inspection + packet count | `PYTEST` | UNIMPLEMENTED |
 | WIRE-7 | S-PROD-3 | Over 100,000 bytes with 5% packet loss injected in both directions, the host-assembled stream equals the core's emitted stream | lossy mock transport | `PYTEST` | UNIMPLEMENTED |
+
+### 2.8b Software Etherbone (`SWEB`)
+
+The transport moved from the hardware Etherbone endpoint into firmware
+(SPEC §12 amendment 2026-08-09). These rows cover the replacement:
+`firmware/eb8008.c` (server), the `firmware/udp.c` fork (S-NET-4), the serve
+loop in `firmware/main.c`, and the host bridge `b8008net/eb_server.py`.
+
+| ID | Spec cite | Assertion | Conditions | Check | Status |
+|---|---|---|---|---|---|
+| SWEB-1 | S-WIRE-2 | A `pf=1` probe yields a 12-byte header-only reply: magic, version 1, `pr=1`, `pf` clear, addr/port size 4/4 | probe framing bytes | `CTEST` `test_eb8008_host.c` | PASS |
+| SWEB-2 | S-WIRE-2 | A read record is answered as a write record whose `base_write_addr` echoes the request's `base_ret_addr`, values in request order, exactly one bus read per address | 1, 2, and 255-word reads; multi-record packets | `CTEST` | PASS |
+| SWEB-3 | S-WIRE-2 | A write record executes fire-and-forget (no reply) at incrementing word addresses, exactly `wcount` bus writes | 1, 3, 255-word writes; write+read in one record | `CTEST` | PASS |
+| SWEB-4 | S-WIRE-2 | Malformed input — bad magic, short packet, `wcount`/`rcount` promising bytes the packet lacks — produces no reply and zero bus accesses | truncation at every byte offset | `CTEST` (2149-case sweep) | PASS |
+| SWEB-5 | S-WIRE-2a | No reply exceeds request length + 16, and no byte beyond `resp_len` is written | canary + contract checked on every call of the sweep | `CTEST` | PASS |
+| SWEB-6 | S-WIRE-5 | 255-word write and read bursts complete intact | full-depth burst both directions | `CTEST` | PASS |
+| SWEB-7 | S-WIRE-2b | Requests are accepted on any UDP dst port, gated by Etherbone magic; the reply mirrors the request's ports | port-rewritten request | `CTEST` (serve-loop harness) | UNIMPLEMENTED |
+| SWEB-8 | S-WIRE-2b | The reply is unicast to the MAC captured from the request frame; no ARP request for the requester is ever emitted | reply addressing | `CTEST` (udp fork harness) | UNIMPLEMENTED |
+| SWEB-9 | S-WIRE-2 | Byte-for-byte differential against litex's own `EtherbonePacket` encode/decode: litex-encoded requests parse, replies decode as litex expects | probe, reads, writes, randomized records | `PYTEST` driving the `CTEST` binary | UNIMPLEMENTED |
+| SWEB-10 | S-NET-4 | The RX path delivers UDP to the callback for dst = own IP, limited broadcast, and /24 subnet broadcast — and for nothing else | all three classes + a foreign unicast | `CTEST` (udp fork harness) | UNIMPLEMENTED |
+| SWEB-11 | S-NET-4 | Every TX frame below 100 bytes leaves padded to 100 with zeroed trailer | ARP reply, gratuitous announce | `CTEST` (udp fork harness) | UNIMPLEMENTED |
+| SWEB-12 | S-NET-3 | Gratuitous ARP at serve start and ~30 s cadence; gateway ARP round-trip at ~10 s cadence | on-board observation | `HW` | UNIMPLEMENTED |
+| SWEB-13 | S-WIRE-2b | `CommUDPBroadcast.probe()`/`.read()` tolerate the socket's own broadcast echo and stale replies, correlating by `read_counter` | fake socket feeding echo + stale + good | `PYTEST` | UNIMPLEMENTED |
+| SWEB-14 | S-WIRE-2b | `discover()` tries the broadcast probe before DNS and the unicast sweep; a broadcast answer short-circuits and is cached | mocked transports | `PYTEST` | UNIMPLEMENTED |
 
 ### 2.9 End-to-end (`E2E`)
 

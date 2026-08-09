@@ -42,10 +42,16 @@ The pin list is specified; whatever you hang off it is not.
 
 ## Status
 
-**Spec-first, pre-hardware.** The RTL has been corrected against the spec, the
-simulation tiers run, and the bitstream now builds clean through yosys/nextpnr-ecp5/
-ecppack — but nothing here has executed on real silicon, and the test suites have not
-been run against a board.
+**On silicon.** As of 2026-08-09 the stack runs end to end on the ECP5-5G Versa:
+DHCP lease, network discovery, `make login` into the 8008 monitor, memory
+read/write through the monitor verified by hand. Ethernet bring-up forced one
+architecture change — the LiteEth *hybrid* hardware Etherbone endpoint proved
+dead at gigabit in every configuration (post-mortem preserved on tag
+`hybrid-debug-2026-08-08`), so the transport is now a **software Etherbone
+server on the VexRiscv** (`firmware/eb8008.c`) over the plain ethmac, with a
+broadcast-request/unicast-reply wire contract that survives mesh WiFi routers
+that drop client→wired unicast (SPEC §12, amended). sys_clk runs at 60 MHz —
+the stock 75 MHz fails nextpnr timing closure on this design.
 
 [`SPEC.md`](SPEC.md) and [`docs/VPLAN.md`](docs/VPLAN.md) were written **before** the
 RTL was corrected, and they are authoritative over it. The verification plan recorded
@@ -88,10 +94,10 @@ never run would be documenting a guess.
 ```
  your laptop                     ECP5-5G Versa
 ┌──────────┐        ┌─────────────────────────────────────────┐
-│ b8008net │  UDP   │  cd_sys 75 MHz      │  cd_b8008 25 MHz   │
-│   CLI    ├───────►│  Etherbone          │                    │
+│ b8008net │  UDP   │  cd_sys 60 MHz      │  cd_b8008 25 MHz   │
+│   CLI    ├───────►│  ethmac             │                    │
 │          │◄───────┤  console FIFOs  ────┼──► b8008 core      │
-└──────────┘        │  VexRiscv/DHCP    serial 115200 + ROM    │
+└──────────┘        │  VexRiscv: DHCP + software Etherbone     │
                     └───────────────────────────┬─────────────┘
                                                 ▼ X3 debug pins
                                           external observer
@@ -111,12 +117,14 @@ by construction, that orders `cd_b8008`'s reset release against `cd_sys`'s
 | `docs/VPLAN.md` | The verification plan — the contract the RTL must satisfy |
 | `soc/` | LiteX target (`versa_soc.py`) and the `B8008Core` integration module |
 | `src/` | The `b8008_net_core` VHDL wrapper and its ROM model |
-| `sim/` | Three sim tiers: GHDL boot, Verilator gate-level, Verilator CSR/wishbone bench |
+| `sim/` | Two sim tiers: GHDL boot, Verilator gate-level netlist boot |
 | `firmware/` | VexRiscv DHCP/identity firmware — distinct from the 8008 monitor ROM |
 | `host/` | The `b8008net` Python package and its pytest suite |
 
-`host/` is `make login`: zero-config discovery (cache, then DNS, then a subnet probe
-sweep — see `host/b8008net/discovery.py`) finds the board and drops you straight into
+`host/` is `make login`: zero-config discovery (cache, then a broadcast probe,
+then DNS, then a subnet probe sweep — see `host/b8008net/discovery.py`; the
+broadcast probe is first because it is the one client→board direction mesh WiFi
+reliably delivers) finds the board and drops you straight into
 the monitor's console. Point at a specific board with `make login HOST=10.0.0.5` to
 skip discovery entirely. Press **Ctrl-]** to leave the session and return to your
 shell. There is no bulk-load command in the CLI — pacing a large transfer (e.g.
@@ -151,7 +159,9 @@ make litex-env          # one-time: LiteX 2026.04 + deps into .venv
 
 make sim-core           # GHDL behavioral boot sim
 make sim-netlist        # Verilator gate-level netlist boot sim
-make sim-bench          # Verilator CSR/wishbone bench
+
+make test               # hermetic software suite: C units + host + VPLAN pytest
+make coverage-c         # firmware C line coverage, 100% enforced
 
 make convert            # FuseSoC-generated VHDL -> Verilog netlist
 make bootstrap-headers  # fresh checkout only, BEFORE `make firmware`
@@ -171,13 +181,26 @@ Host package:
 .venv/bin/python -m pytest host/tests
 ```
 
-## Two known toolchain traps
+## Known toolchain and environment traps
 
-Both cost real time once, and both are now spec'd rather than remembered:
+Each cost real time once, and each is now spec'd or tested rather than remembered:
 
-- Etherbone's `buffer_depth` must be **255**, not LiteEth's default of 16. The
-  default silently overflows on the 255-word bursts `RemoteClient` uses for writes.
-  (`SPEC.md` `S-WIRE-2`)
 - `litex_server` clamps `CommUDP` reads to one word and its read-merger downgrades
   `burst="fixed"` into *n* separate round trips. A requested burst silently becomes
   *n* packets. (`SPEC.md` `S-WIRE-3`)
+- LiteEth hybrid mode (hardware Etherbone + CPU ethmac on one PHY) passes
+  upstream simulation but is dead on real gigabit silicon. Tag
+  `hybrid-debug-2026-08-08` preserves the bisect flags and post-mortem.
+- Vendored libliteeth `udp.c` can never deliver a broadcast UDP datagram to its
+  own `ETH_UDP_BROADCAST` callback — `process_frame`'s destination filter drops
+  it first. `firmware/udp.c` is the fixed fork. (`SPEC.md` `S-NET-4`)
+- Consumer mesh WiFi (bench: Nighthawk MR60) drops or NATs WiFi-client→wired
+  *unicast* while forwarding subnet broadcast; it also negative-caches ARP for
+  an address that once failed to resolve. The transport and the firmware's ARP
+  keepalives (`S-NET-3`, `S-WIRE-2b`) are shaped by this.
+- GNU make 3.81 exec's metachar-free recipe lines with its own inherited PATH,
+  ignoring an exported venv PATH — vendored tools must be invoked by absolute
+  path.
+- Every `--integrated-rom-init` gateware build rewrites `regions.ld` with ROM
+  shrunk to the previous firmware; `firmware/linker.ld` carries fixed ceilings
+  instead of including it.

@@ -636,12 +636,42 @@ clear would make the sticky bits unreliable in exactly the situation they exist 
 
 ## 12. Host wire contract
 
-`S-WIRE-1` The transport is **Etherbone over UDP**, served by the hardware Etherbone
-endpoint. The host uses LiteX's `RemoteClient` via the `b8008net` package.
+> **Amended 2026-08-09.** As specified through 2026-08-08, `S-WIRE-1` required the
+> *hardware* Etherbone endpoint (LiteEth hybrid mode). Silicon bring-up found the
+> hybrid hardware path dead at gigabit in every configuration — liteeth 2026.04
+> and master, dw 8 and 32, static and dynamic IP, stock `add_etherbone` and the
+> local reconstruction — while upstream's own hybrid simulation passes; the full
+> post-mortem is preserved on git tag `hybrid-debug-2026-08-08`. The transport
+> was moved into firmware. Bring-up also found the operator-side mesh WiFi
+> (Nighthawk MR60) drops or NATs WiFi-client → wired-LAN *unicast* while
+> forwarding subnet broadcast reliably; the wire contract below therefore
+> specifies a broadcast-request/unicast-reply transport. The §1 product
+> guarantee (`S-PROD-3`) is unchanged.
 
-`S-WIRE-2` Etherbone's `buffer_depth` shall be **255**, not the LiteEth default of
-16. The default silently overflows on the 255-word bursts `RemoteClient` uses for
-writes.
+`S-WIRE-1` The transport is **Etherbone over UDP**, served by a **software
+Etherbone server on the VexRiscv** (`firmware/eb8008.c`) over the plain CPU
+ethmac. The LiteEth hybrid hardware endpoint is retired (tag
+`hybrid-debug-2026-08-08`). The host uses LiteX's `RemoteClient` via the
+`b8008net` package, bridged by `b8008net.eb_server` (not stock `litex_server`).
+
+`S-WIRE-2` The server implements the litex `CommUDP` dialect: probe requests
+(`pf=1`) get a header-only `pr=1` reply; write records execute fire-and-forget;
+read records are answered as write records whose `base_write_addr` echoes the
+request's `base_ret_addr` (CommUDP's correlation id). All values 32-bit
+big-endian, `addr_size = port_size = 4`.
+
+`S-WIRE-2a` A reply shall never exceed **request length + 16 bytes**. This bound
+is structural (a read record consumes at least as many request bytes as its
+reply produces; a probe reply adds 4) and is what sizes the firmware's reply
+buffer against its receive buffer.
+
+`S-WIRE-2b` Client → board requests travel as **subnet-directed broadcast**
+(e.g. `192.168.1.255`); the board accepts them on any UDP port, gated by the
+Etherbone magic, because NATing mesh bridges rewrite ports in transit. Replies
+are **unicast to the requester's source MAC and IP as captured from the request
+frame** — no ARP resolution of the requester (the client → board unicast
+direction is exactly what the mesh drops) — and mirror the request's ports so a
+NAT translates them back.
 
 `S-WIRE-3` UDP **reads** are one 32-bit word per round trip. `RemoteServer` codes
 `read_max_length = {"CommUDP": 1}`, and `CommUDP.read()` asserts `burst == "incr"`,
@@ -674,6 +704,22 @@ the leased address into Etherbone's IP CSR.
 `S-NET-2` The behavior of `S-NET-1` is **imported**, not specified here. It is
 verified only at the level of "the board is reachable at the expected name"
 (`docs/VPLAN.md` §HW).
+
+`S-NET-3` After acquiring a lease the firmware shall keep the LAN's ARP state
+alive on the board's behalf: a gratuitous ARP announce at serve start and every
+~30 s, and a forced ARP round-trip to the gateway (assumed `.1` on the /24)
+every ~10 s. Rationale: consumer mesh routers negative-cache an address that
+once failed to resolve and never ask again; the board's own *request* carries
+its sender mapping and repopulates their tables. Verified at `HW` level only.
+
+`S-NET-4` The firmware's UDP RX path shall accept limited (`255.255.255.255`)
+**and** /24 subnet-directed broadcast in both its frame filter and its UDP
+dispatch. The vendored libliteeth `udp.c` cannot do this — its `process_frame`
+destination filter makes the `ETH_UDP_BROADCAST` callback path unreachable dead
+code — which is why `firmware/udp.c` exists as a fork. The fork also pads every
+TX frame below 100 bytes (min-frame margin), captures the source MAC of each
+received UDP frame, and exposes `udp_set_peer` for ARP-free replies
+(`S-WIRE-2b`).
 
 ---
 

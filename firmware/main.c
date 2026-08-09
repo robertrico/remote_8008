@@ -31,14 +31,11 @@
 // The Etherbone core's identity (see caveat 1 in dhcp8008.c): this is what
 // goes in the DHCP chaddr/client-id fields, and it's the address the leased
 // IP is ultimately *for*.
-// Bring-up experiment: Raspberry Pi OUI (B8:27:EB) instead of the project's
-// 10:E2:D5 -- testing whether the MR60 drops WiFi->wired unicast based on
-// an OUI it doesn't recognize.
-static const uint8_t chaddr_etherbone[6] = {0xb8, 0x27, 0xeb, 0x00, 0x80, 0x09};
+static const uint8_t chaddr_etherbone[6] = {0x10, 0xe2, 0xd5, 0x00, 0x00, 0x01};
 
 // The CPU's own ethmac interface: this is what actually goes in the
 // Ethernet frames' source MAC field (udp_start()'s macaddr argument).
-static const uint8_t mac_ethmac[6] = {0xb8, 0x27, 0xeb, 0x00, 0x80, 0x08};
+static const uint8_t mac_ethmac[6] = {0x10, 0xe2, 0xd5, 0x00, 0x00, 0x02};
 
 #define DHCP_CLIENT_PORT 68
 #define DHCP_SERVER_PORT 67
