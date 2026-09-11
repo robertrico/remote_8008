@@ -4,6 +4,10 @@ SHELL := /bin/bash
 
 OSS_CAD_SUITE ?= $(HOME)/oss-cad-suite/bin
 GHDL ?= $(OSS_CAD_SUITE)/ghdl
+# The core repo's FuseSoC generator (ghdl_synth_verilog.py) resolves GHDL from
+# the GHDL env var, else ~/oss-cad-suite/bin/ghdl. Export so `make convert`
+# works wherever OSS_CAD_SUITE points, not just on a machine with the default.
+export GHDL
 
 LITEX_TAG ?= 2026.04
 VENV := .venv
