@@ -32,11 +32,11 @@ litex-env:
 	test -f litex_setup.py || curl -fsSL -o litex_setup.py \
 	  https://raw.githubusercontent.com/enjoy-digital/litex/master/litex_setup.py
 	cd $(VENV) && ../$(PY) ../litex_setup.py --init --install --tag=$(LITEX_TAG) --config=standard
-	$(MAKE) liteeth-pin
 	$(PY) -c "import litex, liteeth, litex_boards; print('litex OK')"
 
-# Move the vendored liteeth checkout to LITEETH_REV. Safe to re-run on an
-# existing environment; the editable install follows the working tree.
+# Move the vendored liteeth checkout to LITEETH_REV. Manual only: litex-env
+# does not call this, so an existing environment's checkout is never moved
+# behind your back. The editable install follows the working tree.
 # litex_setup.py clones next to its cwd, which the litex-env recipe makes
 # $(VENV); older environments (this repo's first checkout) have the trees at
 # the repo root instead. Accept either.
