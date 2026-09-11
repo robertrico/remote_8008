@@ -37,11 +37,15 @@ litex-env:
 
 # Move the vendored liteeth checkout to LITEETH_REV. Safe to re-run on an
 # existing environment; the editable install follows the working tree.
+# litex_setup.py clones next to its cwd, which the litex-env recipe makes
+# $(VENV); older environments (this repo's first checkout) have the trees at
+# the repo root instead. Accept either.
+LITEETH_DIR := $(if $(wildcard $(VENV)/liteeth/.git),$(VENV)/liteeth,liteeth)
 .PHONY: liteeth-pin
 liteeth-pin:
-	git -C liteeth cat-file -e $(LITEETH_REV)^{commit} 2>/dev/null || git -C liteeth fetch -q origin
-	git -C liteeth checkout -q $(LITEETH_REV)
-	@echo "liteeth at $$(git -C liteeth rev-parse --short HEAD)"
+	git -C $(LITEETH_DIR) cat-file -e $(LITEETH_REV)^{commit} 2>/dev/null || git -C $(LITEETH_DIR) fetch -q origin
+	git -C $(LITEETH_DIR) checkout -q $(LITEETH_REV)
+	@echo "liteeth ($(LITEETH_DIR)) at $$(git -C $(LITEETH_DIR) rev-parse --short HEAD)"
 
 # Toolchain sanity: build the stock Versa ECP5 target to a bitstream.
 # NOTE: must run from build/ — litex_setup.py clones the litex/ repo into this
