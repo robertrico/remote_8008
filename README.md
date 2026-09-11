@@ -148,6 +148,8 @@ repo consumes the core as the FuseSoC core `greygiant:retro:b8008` via its
 3. **`CORE_DIR`**: the core repo checkout providing `greygiant:retro:b8008` — default
    `~/Development/intel-8008-vhdl`.
 4. `make litex-env` — pinned LiteX toolchain (LiteX `2026.04`) into a local `.venv`.
+   `make liteeth-pin LITEETH_REV=<rev>` moves just liteeth; see the Makefile
+   comment on `LITEETH_REV` for why it stays on the tag for now.
 5. **RISC-V cross gcc** (`riscv64-unknown-elf-gcc`) on `PATH`. On macOS/Homebrew its
    `cc1` also needs `brew install isl mpfr` — without them, missing dylibs make `cc1`
    crash with a misleading "internal compiler error". Diagnose with `otool -L`.

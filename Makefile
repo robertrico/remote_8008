@@ -10,6 +10,14 @@ GHDL ?= $(OSS_CAD_SUITE)/ghdl
 export GHDL
 
 LITEX_TAG ?= 2026.04
+# liteeth revision. The 2026-08-08 bring-up commit says the DHCP lease on
+# silicon needed liteeth master 276c9e3 and that the 2026.04 tag mangles
+# hybrid-mode TX preambles. But liteeth 28b4493 (2026-06-02, before 276c9e3)
+# started using litex master's CSR aliases (CSR.wr_stb), which litex 2026.04
+# does not have, so 276c9e3 cannot pair with the pinned litex: elaboration
+# fails in liteeth/mac/sram.py. Stays on the tag until litex moves too.
+# Override to test: make liteeth-pin LITEETH_REV=276c9e3
+LITEETH_REV ?= 2026.04
 VENV := .venv
 PY := $(VENV)/bin/python
 
@@ -24,7 +32,16 @@ litex-env:
 	test -f litex_setup.py || curl -fsSL -o litex_setup.py \
 	  https://raw.githubusercontent.com/enjoy-digital/litex/master/litex_setup.py
 	cd $(VENV) && ../$(PY) ../litex_setup.py --init --install --tag=$(LITEX_TAG) --config=standard
+	$(MAKE) liteeth-pin
 	$(PY) -c "import litex, liteeth, litex_boards; print('litex OK')"
+
+# Move the vendored liteeth checkout to LITEETH_REV. Safe to re-run on an
+# existing environment; the editable install follows the working tree.
+.PHONY: liteeth-pin
+liteeth-pin:
+	git -C liteeth cat-file -e $(LITEETH_REV)^{commit} 2>/dev/null || git -C liteeth fetch -q origin
+	git -C liteeth checkout -q $(LITEETH_REV)
+	@echo "liteeth at $$(git -C liteeth rev-parse --short HEAD)"
 
 # Toolchain sanity: build the stock Versa ECP5 target to a bitstream.
 # NOTE: must run from build/ — litex_setup.py clones the litex/ repo into this
