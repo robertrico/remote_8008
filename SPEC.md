@@ -111,6 +111,15 @@ software (SCELBAL BASIC, HEXPAWN) running on real hardware.
 exposes today. No change to `intel-8008-vhdl` is required or permitted by this
 specification.
 
+> **Amended 2026-09-10.** `intel-8008-vhdl` c05c7c7 (2026-08-08) removed the
+> `EXTERNAL_RAM` generic, the `ram_ext_*` bus and the 3-bit `int_vector` from
+> `b8008_top`; RAM is now the core's own 16 KB `ram_sync` and the interrupt
+> port is an 8-bit `int_instruction` whose default is RST 0. The wrapper
+> followed on 2026-09-10: its `ram_*` ports are gone and the Migen side no
+> longer instantiates a RAM. The frozen list is the wrapper's port list as of
+> that change. The memory map, the console path and every other statement in
+> this document are unaffected.
+
 ### 3.1 Imported timing facts
 
 These are measured from the core's source and are binding constraints on the wrapper.

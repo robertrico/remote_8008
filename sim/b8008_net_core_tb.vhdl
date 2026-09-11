@@ -3,12 +3,12 @@
 --------------------------------------------------------------------------------
 -- Proves the pure-logic monitor core boots the firmware with NO physical
 -- button press (auto-start) and emits its UART banner. The core has no PLL,
--- no pads, no debouncers and no on-chip memories: the ROM (rom_4kx8_bram, the
--- baked b8008_monitor firmware) and the data RAM (ram_sync) are instantiated
--- HERE, outside the core, wired to the core's external buses per the
--- b8008_top ram_ext_* / rom contract.
+-- no pads, no debouncers and no on-chip ROM: the ROM (rom_4kx8_bram, the
+-- baked b8008_monitor firmware) is instantiated HERE, outside the core, on
+-- the core's external ROM bus. RAM is b8008_top's own ram_sync inside the
+-- core (intel-8008-vhdl c05c7c7 purged EXTERNAL_RAM).
 --
--- Boot sequence (all at 25 MHz, ctl_* inputs held low):
+-- Boot sequence (all at 25 MHz):
 --   POR (~21 ms) -> auto_start_pulse (2 ms later) -> debug reset ->
 --   bootstrap RST 0 jam -> T1I detect -> bootstrap_done -> CPU fetches from
 --   ROM -> firmware delay_short (~380 ms) -> send_banner -> OUT 9 UART bytes.
@@ -50,25 +50,6 @@ architecture behavior of b8008_net_core_tb is
     signal uart_tx : std_logic;
     signal uart_rx : std_logic := '1';
 
-    -- Control pulses (held low: auto-start must boot it headless)
-    signal ctl_run_stop   : std_logic := '0';
-    signal ctl_step_cycle : std_logic := '0';
-    signal ctl_step_sync  : std_logic := '0';
-    signal ctl_int        : std_logic := '0';
-    signal ctl_int_vector : std_logic_vector(2 downto 0) := "000";
-
-    -- Status
-    signal sts_is_running : std_logic;
-    signal sts_triggered  : std_logic;
-    signal sts_tx_busy    : std_logic;
-
-    -- External RAM bus (absolute 14-bit 8008 address) - wired to ram_sync
-    signal ram_addr  : std_logic_vector(13 downto 0);
-    signal ram_wdata : std_logic_vector(7 downto 0);
-    signal ram_rdata : std_logic_vector(7 downto 0);
-    signal ram_rw_n  : std_logic;
-    signal ram_cs_n  : std_logic;
-
     -- External ROM bus (4KB, 12 address bits) - wired to rom_4kx8_bram
     signal rom_addr : std_logic_vector(11 downto 0);
     signal rom_data : std_logic_vector(7 downto 0);
@@ -98,19 +79,6 @@ begin
             rst            => rst,
             uart_tx        => uart_tx,
             uart_rx        => uart_rx,
-            ctl_run_stop   => ctl_run_stop,
-            ctl_step_cycle => ctl_step_cycle,
-            ctl_step_sync  => ctl_step_sync,
-            ctl_int        => ctl_int,
-            ctl_int_vector => ctl_int_vector,
-            sts_is_running => sts_is_running,
-            sts_triggered  => sts_triggered,
-            sts_tx_busy    => sts_tx_busy,
-            ram_addr       => ram_addr,
-            ram_wdata      => ram_wdata,
-            ram_rdata      => ram_rdata,
-            ram_rw_n       => ram_rw_n,
-            ram_cs_n       => ram_cs_n,
             rom_addr       => rom_addr,
             rom_data       => rom_data,
             dbg_d          => dbg_d,
@@ -121,27 +89,6 @@ begin
             dbg_phi1       => dbg_phi1,
             dbg_phi2       => dbg_phi2,
             dbg_int        => dbg_int
-        );
-
-    ----------------------------------------------------------------------------
-    -- External data RAM: ram_sync is the behavioral model, contract-conformant
-    -- by construction (1-cycle synchronous read, no CS gating on reads).
-    -- ADDR_BITS => 14: RAM is addressed by the ABSOLUTE 14-bit 8008 address
-    -- (b8008_top default map generics: RAM_ADDR_BITS=14, no base subtraction),
-    -- matching what the internal ram_sync instance is at defaults.
-    ----------------------------------------------------------------------------
-    u_ram : entity work.ram_sync
-        generic map (
-            ADDR_BITS => 14,
-            INIT_FILE => ""
-        )
-        port map (
-            CLK      => clk,
-            ADDR     => ram_addr,
-            DATA_IN  => ram_wdata,
-            DATA_OUT => ram_rdata,
-            RW_N     => ram_rw_n,
-            CS_N     => ram_cs_n
         );
 
     ----------------------------------------------------------------------------

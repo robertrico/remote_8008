@@ -6,7 +6,9 @@
 --   - no PLL (clk arrives already at 25 MHz from the LiteX CRG)
 --   - no I/O pads (console serial and the LA debug are internal wires)
 --   - no debouncers / DIP switches (front-panel features become ports)
---   - no on-chip memory arrays (ROM and RAM live outside on external buses)
+--   - no ROM array (the 4KB monitor ROM lives outside on an external bus);
+--     RAM is b8008_top's own 16KB ram_sync, since the core absorbed it on
+--     2026-08-08 (intel-8008-vhdl c05c7c7, EXTERNAL_RAM purged)
 --
 -- Everything that made the monitor boot to its "8008 Monitor" banner on
 -- silicon is kept verbatim: the POR counter, the 2 ms auto-start press, the
@@ -52,17 +54,6 @@ entity b8008_net_core is
         -- synchronized into this clock domain by a 2-FF MultiReg on the
         -- Migen side (SPEC.md S-CDC-1 X3). '1' freezes the phase generator.
         ext_hold       : in std_logic := '0';
-        -- external RAM bus (contract: see b8008_top ram_ext_* comment).
-        -- Full 14-bit ABSOLUTE 8008 address, passed through unsliced: the
-        -- b8008_top default map generics (RAM_BASE=0x1000, RAM_LAST=0x3FFF,
-        -- RAM_ADDR_BITS=14) address RAM by latched_address[13:0] with no
-        -- base subtraction. Slicing to 12:0 would alias 0x2000-0x3FFF onto
-        -- 0x0000-0x1FFF and corrupt the live 0x1000-0x1FFF region.
-        ram_addr  : out std_logic_vector(13 downto 0);
-        ram_wdata : out std_logic_vector(7 downto 0);
-        ram_rdata : in  std_logic_vector(7 downto 0);
-        ram_rw_n  : out std_logic;
-        ram_cs_n  : out std_logic;
         -- external ROM bus (contract: 1-cycle synchronous read, no gating)
         rom_addr : out std_logic_vector(11 downto 0);
         rom_data : in  std_logic_vector(7 downto 0);
@@ -77,8 +68,11 @@ end entity b8008_net_core;
 architecture rtl of b8008_net_core is
 
     --------------------------------------------------------------------------------
-    -- Component: b8008_top (CPU with external ROM and external RAM)
+    -- Component: b8008_top (CPU with external ROM and internal RAM)
     --------------------------------------------------------------------------------
+    -- Only the generics and ports this wrapper touches are declared; the rest
+    -- of the entity binds by default (int_instruction stays at its "00000101"
+    -- RST 0 default, ram_byte_led and LED_SHADOW_ADDR are board features).
     component b8008_top is
         generic (
             CLK_FREQ_HZ   : integer := 100_000_000;
@@ -87,15 +81,13 @@ architecture rtl of b8008_net_core is
             ROM_LAST      : integer := 16#0FFF#;
             RAM_BASE      : integer := 16#1000#;
             RAM_LAST      : integer := 16#3FFF#;
-            RAM_ADDR_BITS : integer := 14;
-            EXTERNAL_RAM  : boolean := false
+            RAM_ADDR_BITS : integer := 14
         );
         port (
             clk_in      : in std_logic;
             reset       : in std_logic;
             run_enable  : in std_logic;
             interrupt   : in std_logic;
-            int_vector  : in std_logic_vector(2 downto 0);
             ready_in    : in std_logic := '1';
             phi1_out    : out std_logic;
             phi2_out    : out std_logic;
@@ -136,12 +128,7 @@ architecture rtl of b8008_net_core is
             rom_a               : out std_logic_vector(13 downto 0);
             rom_d               : in  std_logic_vector(7 downto 0);
             rom_ce_n            : out std_logic;
-            rom_oe_n            : out std_logic;
-            ram_ext_addr  : out std_logic_vector(13 downto 0);
-            ram_ext_wdata : out std_logic_vector(7 downto 0);
-            ram_ext_rdata : in  std_logic_vector(7 downto 0) := x"00";
-            ram_ext_rw_n  : out std_logic;
-            ram_ext_cs_n  : out std_logic
+            rom_oe_n            : out std_logic
         );
     end component;
 
@@ -200,10 +187,6 @@ architecture rtl of b8008_net_core is
     signal reset_sw     : std_logic;
     signal reset_int    : std_logic;
 
-    -- Bootstrap RST-0 jam vector. Host interrupt injection (SPEC.md
-    -- S-PROD-8, D-8) is retired -- this now only ever holds "000".
-    signal cpu_int_vec  : std_logic_vector(2 downto 0);
-
     -- CPU signals
     signal phi1         : std_logic;
     signal phi2         : std_logic;
@@ -225,8 +208,7 @@ architecture rtl of b8008_net_core is
     signal auto_start_pulse : std_logic := '0';
 
     -- ROM bus (b8008_top drives 14-bit addresses; sliced to 12 bits for the
-    -- 4KB firmware). The RAM bus needs no intermediate: ram_ext_addr goes out
-    -- unsliced (absolute 14-bit addressing, see entity comment).
+    -- 4KB firmware). RAM is inside b8008_top and needs no bus here.
     signal rom_a_int      : std_logic_vector(13 downto 0);
     signal rom_d_cpu      : std_logic_vector(7 downto 0);
 
@@ -376,30 +358,20 @@ begin
     -- Interrupt request: retired (SPEC.md S-PROD-8, D-8)
     --------------------------------------------------------------------------------
     -- Host interrupt injection (formerly ctl_int / ctl_int_vector) no longer
-    -- exists as a product surface. What remains is only the bootstrap RST 0
-    -- jam: cpu_int_vec holds "000" for as long as bootstrap_done = '0' (or
-    -- under reset) and is never written afterward, so it is permanently
-    -- "000" once latched -- there is no other write path left.
-    vec_latch : process(clk)
-    begin
-        if rising_edge(clk) then
-            if reset_int = '1' or bootstrap_done = '0' then
-                cpu_int_vec <= "000";              -- bootstrap jams RST 0
-            end if;
-        end if;
-    end process;
+    -- exists as a product surface. The only interrupt left is the bootstrap
+    -- jam, and the byte it jams is b8008_top's int_instruction default
+    -- "00000101" = RST 0, so the port is left unconnected.
 
     --------------------------------------------------------------------------------
     -- b8008 CPU System Instance
     --------------------------------------------------------------------------------
-    -- EXTERNAL_RAM => true: RAM is owned by the SoC and driven over ram_ext_*.
     -- The memory-map generics are left at b8008_top's defaults, exactly as the
     -- monitor top instantiated it (ROM 0x0000-0x0FFF, RAM 0x1000-0x3FFF).
+    -- RAM is b8008_top's internal 16KB ram_sync with absolute 14-bit addressing.
     --------------------------------------------------------------------------------
     u_system : b8008_top
         generic map (
-            CLK_FREQ_HZ  => 25_000_000,
-            EXTERNAL_RAM => true
+            CLK_FREQ_HZ  => 25_000_000
         )
         port map (
             clk_in      => clk,
@@ -408,7 +380,6 @@ begin
             -- machine. SPEC.md S-BP-4 -- a hold, never a gated clock.
             run_enable  => (dbg_run_enable and not ext_hold),
             interrupt   => bootstrap_int,         -- only source left: the boot RST 0 jam
-            int_vector  => cpu_int_vec,           -- always "000" -- see vec_latch above
             ready_in    => '1',                   -- READY hold removed; always ready
             phi1_out    => phi1,
             phi2_out    => phi2,
@@ -451,13 +422,7 @@ begin
             rom_a               => rom_a_int,
             rom_d               => rom_d_cpu,
             rom_ce_n            => open,
-            rom_oe_n            => open,
-            -- External RAM interface (owned by the SoC)
-            ram_ext_addr  => ram_addr,
-            ram_ext_wdata => ram_wdata,
-            ram_ext_rdata => ram_rdata,
-            ram_ext_rw_n  => ram_rw_n,
-            ram_ext_cs_n  => ram_cs_n
+            rom_oe_n            => open
         );
 
     -- ROM: external path only. The SoC owns the ROM; feed its data straight to

@@ -88,8 +88,8 @@ B8008_SRCS := \
 	$(SRC_DIR)/scratchpad_decoder.vhdl \
 	$(SRC_DIR)/ahl_pointer.vhdl \
 	$(SRC_DIR)/temp_registers.vhdl \
-	$(SRC_DIR)/alu.vhdl \
 	$(SRC_DIR)/carry_lookahead.vhdl \
+	$(SRC_DIR)/alu.vhdl \
 	$(SRC_DIR)/io_buffer.vhdl \
 	$(SRC_DIR)/mem_mux_refresh.vhdl \
 	$(COMP_DIR)/phase_clocks.vhdl \
@@ -171,8 +171,8 @@ convert: $(NETLIST_V)
 # sim-netlist: Verilator gate-level boot sim of the converted netlist
 # ============================================================================
 # Proves the GHDL->Verilog netlist still boots the monitor to its UART
-# banner, driven by Verilog memory models (sim/models.v) standing in for the
-# external ROM/RAM buses, and a UART RX decoder testbench (sim/netlist_tb.v).
+# banner, driven by a Verilog ROM model (sim/models.v) standing in for the
+# external ROM bus, and a UART RX decoder testbench (sim/netlist_tb.v).
 # 450 ms of sim time (~11M cycles at 25 MHz) over a gate-level netlist would
 # crawl under iverilog - use verilator (compiled native code). In practice
 # verilator's --binary run finishes this whole 450 ms budget in a few

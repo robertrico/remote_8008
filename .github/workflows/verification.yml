@@ -69,17 +69,10 @@ jobs:
         with:
           osscadsuite-version: "2025-07-15"
 
-      # Pinned: core commit c05c7c7 (2026-08-08) purged EXTERNAL_RAM, int_vector
-      # and the ram_ext_* bus from b8008_top, which src/b8008_net_core.vhdl
-      # still instantiates. 70c7498 is the last commit before the orphan-module
-      # deletion (c799a76) whose FuseSoC fileset is consistent, and the wrapper
-      # converts against it. Move the ref when the wrapper is reworked for
-      # RAM-inside-core.
       - name: Check out intel-8008-vhdl (FuseSoC core dependency)
         uses: actions/checkout@v4
         with:
           repository: robertrico/intel-8008-vhdl
-          ref: 70c7498
           path: core-repo
 
       - name: Convert core netlist
