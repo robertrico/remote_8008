@@ -41,6 +41,7 @@ litex-env:
 # $(VENV); older environments (this repo's first checkout) have the trees at
 # the repo root instead. Accept either.
 LITEETH_DIR := $(if $(wildcard $(VENV)/liteeth/.git),$(VENV)/liteeth,liteeth)
+LITEX_DIR   := $(if $(wildcard $(VENV)/litex/.git),$(VENV)/litex,litex)
 .PHONY: liteeth-pin
 liteeth-pin:
 	git -C $(LITEETH_DIR) cat-file -e $(LITEETH_REV)^{commit} 2>/dev/null || git -C $(LITEETH_DIR) fetch -q origin
@@ -349,10 +350,10 @@ test-c:
 	$(C_TEST_DIR)/test_dhcp
 	$(HOSTCC) -Wall -Wextra -DEB8008_HOST_TEST -o $(C_TEST_DIR)/test_eb8008 firmware/eb8008.c firmware/test_eb8008_host.c
 	$(C_TEST_DIR)/test_eb8008
-	$(HOSTCC) -Wall -Ifirmware/hostmocks -Ilitex/litex/soc/software -DETH_UDP_BROADCAST \
+	$(HOSTCC) -Wall -Ifirmware/hostmocks -I$(LITEX_DIR)/litex/soc/software -DETH_UDP_BROADCAST \
 	    -o $(C_TEST_DIR)/test_udp firmware/udp.c firmware/test_udp_host.c
 	$(C_TEST_DIR)/test_udp
-	$(HOSTCC) -Wall -Ifirmware/hostmocks -Ilitex/litex/soc/software -Ifirmware \
+	$(HOSTCC) -Wall -Ifirmware/hostmocks -I$(LITEX_DIR)/litex/soc/software -Ifirmware \
 	    -DETH_UDP_BROADCAST -DEB8008_HOST_TEST \
 	    -o $(C_TEST_DIR)/test_eb_serve firmware/udp.c firmware/eb8008.c firmware/eb_serve.c firmware/test_eb_serve_host.c
 	$(C_TEST_DIR)/test_eb_serve
@@ -377,11 +378,11 @@ coverage-c:
 	  $(HOSTCC) --coverage -o test_dhcp \
 	    $(CURDIR)/firmware/dhcp8008.c $(CURDIR)/firmware/test_dhcp_host.c && \
 	  ./test_dhcp > /dev/null && \
-	  $(HOSTCC) --coverage -I$(CURDIR)/firmware/hostmocks -I$(CURDIR)/litex/litex/soc/software \
+	  $(HOSTCC) --coverage -I$(CURDIR)/firmware/hostmocks -I$(CURDIR)/$(LITEX_DIR)/litex/soc/software \
 	    -DETH_UDP_BROADCAST -o test_udp \
 	    $(CURDIR)/firmware/udp.c $(CURDIR)/firmware/test_udp_host.c && \
 	  ./test_udp > /dev/null && \
-	  $(HOSTCC) --coverage -I$(CURDIR)/firmware/hostmocks -I$(CURDIR)/litex/litex/soc/software \
+	  $(HOSTCC) --coverage -I$(CURDIR)/firmware/hostmocks -I$(CURDIR)/$(LITEX_DIR)/litex/soc/software \
 	    -I$(CURDIR)/firmware -DETH_UDP_BROADCAST -DEB8008_HOST_TEST -o test_eb_serve \
 	    $(CURDIR)/firmware/udp.c $(CURDIR)/firmware/eb8008.c $(CURDIR)/firmware/eb_serve.c \
 	    $(CURDIR)/firmware/test_eb_serve_host.c && \

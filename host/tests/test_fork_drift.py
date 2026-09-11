@@ -16,7 +16,11 @@ import pathlib
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
-VENDORED = REPO / "litex/litex/soc/software/libliteeth/udp.c"
+# litex_setup.py clones next to its cwd, which the Makefile makes .venv;
+# older environments have the trees at the repo root. Accept either.
+_LITEX = next((d for d in (REPO / ".venv/litex", REPO / "litex") if (d / ".git").exists()),
+              REPO / "litex")
+VENDORED = _LITEX / "litex/soc/software/libliteeth/udp.c"
 FORK     = REPO / "firmware/udp.c"
 
 # sha256 of the vendored base the fork was audited against (2026-08-09).
